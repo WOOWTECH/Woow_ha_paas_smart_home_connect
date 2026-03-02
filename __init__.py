@@ -27,6 +27,7 @@ from .const import (
     API_BASE_URL,
     CONF_HOME_ID,
     CONF_HOME_NAME,
+    CONF_SUBDOMAIN,
     CONF_TUNNEL_TOKEN,
     CONF_WORKSPACE_ID,
     DOMAIN,
@@ -35,6 +36,7 @@ from .const import (
     SERVICE_START_TUNNEL,
     SERVICE_STOP_TUNNEL,
 )
+from .coordinator import TunnelCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -156,11 +158,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
     api_client = WoowPaasApiClient(session, API_BASE_URL)
     tunnel_manager = CloudflaredManager(hass)
 
+    coordinator = TunnelCoordinator(
+        hass,
+        api_client=api_client,
+        tunnel_manager=tunnel_manager,
+        home_id=entry.data.get(CONF_HOME_ID),
+        subdomain=entry.data.get(CONF_SUBDOMAIN, ""),
+    )
+    await coordinator.async_config_entry_first_refresh()
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {
         "api_client": api_client,
         "tunnel_manager": tunnel_manager,
-        "coordinator": None,  # placeholder, Task 007 will set this up
+        "coordinator": coordinator,
         "session": session,
     }
 
