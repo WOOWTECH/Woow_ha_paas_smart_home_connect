@@ -24,6 +24,7 @@ CONF_WORKSPACE_NAME = "workspace_name"
 CONF_HOME_ID = "home_id"
 CONF_HOME_NAME = "home_name"
 CONF_TUNNEL_TOKEN = "tunnel_token"
+CONF_TUNNEL_ID = "tunnel_id"
 CONF_SUBDOMAIN = "subdomain"
 
 # --- Platforms ---

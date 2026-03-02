@@ -1,0 +1,210 @@
+"""Config flow for Woow PaaS Smart Home integration."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import voluptuous as vol
+
+from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.helpers.config_entry_oauth2_flow import (
+    AbstractOAuth2FlowHandler,
+    async_oauth2_request,
+)
+
+from .const import (
+    API_BASE_URL,
+    API_PATH_HOME_TUNNEL_TOKEN,
+    API_PATH_WORKSPACE_HOMES,
+    API_PATH_WORKSPACES,
+    CONF_HOME_ID,
+    CONF_HOME_NAME,
+    CONF_SUBDOMAIN,
+    CONF_TUNNEL_ID,
+    CONF_TUNNEL_TOKEN,
+    CONF_WORKSPACE_ID,
+    CONF_WORKSPACE_NAME,
+    DOMAIN,
+    ERR_CANNOT_CONNECT,
+    ERR_NO_HOMES,
+    ERR_NO_WORKSPACES,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
+    """Handle a config flow for Woow PaaS Smart Home."""
+
+    DOMAIN = DOMAIN
+    VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize the config flow."""
+        super().__init__()
+        self._oauth_data: dict[str, Any] = {}
+        self._workspaces: list[dict[str, Any]] = []
+        self._homes: list[dict[str, Any]] = []
+        self._selected_workspace_id: int | None = None
+        self._selected_workspace_name: str | None = None
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return logger."""
+        return _LOGGER
+
+    async def async_oauth_create_entry(
+        self, data: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle OAuth2 completion and proceed to workspace selection."""
+        self._oauth_data = data
+        return await self.async_step_select_workspace()
+
+    async def _async_api_request(self, method: str, path: str) -> Any:
+        """Make an authenticated API request using the OAuth2 token."""
+        url = f"{API_BASE_URL}{path}"
+        resp = await async_oauth2_request(
+            self.hass, self._oauth_data["token"], method, url
+        )
+        resp.raise_for_status()
+        return await resp.json()
+
+    async def async_step_select_workspace(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle workspace selection step."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            selected = user_input["workspace"]
+            for ws in self._workspaces:
+                if str(ws["id"]) == selected:
+                    self._selected_workspace_id = ws["id"]
+                    self._selected_workspace_name = ws["name"]
+                    break
+            return await self.async_step_select_home()
+
+        # Fetch workspaces from API
+        try:
+            data = await self._async_api_request("GET", API_PATH_WORKSPACES)
+            self._workspaces = data["workspaces"]
+        except Exception:
+            _LOGGER.exception("Failed to fetch workspaces")
+            errors["base"] = ERR_CANNOT_CONNECT
+            return self.async_show_form(
+                step_id="select_workspace",
+                data_schema=vol.Schema({}),
+                errors=errors,
+            )
+
+        if not self._workspaces:
+            return self.async_abort(reason=ERR_NO_WORKSPACES)
+
+        # Auto-skip if only one workspace
+        if len(self._workspaces) == 1:
+            self._selected_workspace_id = self._workspaces[0]["id"]
+            self._selected_workspace_name = self._workspaces[0]["name"]
+            return await self.async_step_select_home()
+
+        workspace_options = {
+            str(ws["id"]): ws["name"] for ws in self._workspaces
+        }
+        return self.async_show_form(
+            step_id="select_workspace",
+            data_schema=vol.Schema(
+                {vol.Required("workspace"): vol.In(workspace_options)}
+            ),
+            errors=errors,
+        )
+
+    async def async_step_select_home(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle smart home selection step."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            selected = user_input["home"]
+            for home in self._homes:
+                if str(home["id"]) == selected:
+                    return await self._async_create_entry(
+                        home_id=home["id"],
+                        home_name=home["name"],
+                    )
+            errors["base"] = ERR_CANNOT_CONNECT
+
+        if not errors:
+            try:
+                path = API_PATH_WORKSPACE_HOMES.format(
+                    workspace_id=self._selected_workspace_id
+                )
+                data = await self._async_api_request("GET", path)
+                self._homes = data["homes"]
+            except Exception:
+                _LOGGER.exception("Failed to fetch homes")
+                errors["base"] = ERR_CANNOT_CONNECT
+
+        if errors:
+            return self.async_show_form(
+                step_id="select_home",
+                data_schema=vol.Schema({}),
+                errors=errors,
+            )
+
+        if not self._homes:
+            return self.async_show_form(
+                step_id="select_home",
+                data_schema=vol.Schema({}),
+                errors={"base": ERR_NO_HOMES},
+            )
+
+        # Auto-skip if only one home
+        if len(self._homes) == 1:
+            return await self._async_create_entry(
+                home_id=self._homes[0]["id"],
+                home_name=self._homes[0]["name"],
+            )
+
+        home_options = {
+            str(home["id"]): home["name"] for home in self._homes
+        }
+        return self.async_show_form(
+            step_id="select_home",
+            data_schema=vol.Schema(
+                {vol.Required("home"): vol.In(home_options)}
+            ),
+            errors=errors,
+        )
+
+    async def _async_create_entry(
+        self, home_id: int, home_name: str
+    ) -> ConfigFlowResult:
+        """Fetch tunnel token and create the config entry."""
+        await self.async_set_unique_id(str(home_id))
+        self._abort_if_unique_id_configured()
+
+        try:
+            path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=home_id)
+            tunnel_data = await self._async_api_request("GET", path)
+        except Exception:
+            _LOGGER.exception("Failed to fetch tunnel token")
+            return self.async_show_form(
+                step_id="select_home",
+                data_schema=vol.Schema({}),
+                errors={"base": ERR_CANNOT_CONNECT},
+            )
+
+        return self.async_create_entry(
+            title=home_name,
+            data={
+                **self._oauth_data,
+                CONF_WORKSPACE_ID: self._selected_workspace_id,
+                CONF_WORKSPACE_NAME: self._selected_workspace_name,
+                CONF_HOME_ID: home_id,
+                CONF_HOME_NAME: home_name,
+                CONF_TUNNEL_TOKEN: tunnel_data["tunnel_token"],
+                CONF_TUNNEL_ID: tunnel_data["tunnel_id"],
+                CONF_SUBDOMAIN: tunnel_data["subdomain"],
+            },
+        )
