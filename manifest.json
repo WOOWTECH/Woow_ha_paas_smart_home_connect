@@ -1,0 +1,11 @@
+{
+  "domain": "woow_paas_smart_home",
+  "name": "Woow PaaS Smart Home",
+  "codeowners": ["@eugenechen0514"],
+  "config_flow": true,
+  "dependencies": ["application_credentials"],
+  "documentation": "https://gitlab.com/woow3/woow-paas-smart-home",
+  "iot_class": "cloud_push",
+  "requirements": [],
+  "version": "0.1.0"
+}
