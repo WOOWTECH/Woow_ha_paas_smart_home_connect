@@ -1,0 +1,33 @@
+start_tunnel:
+  name: Start Tunnel
+  description: Start the Cloudflare Tunnel for a smart home.
+  fields:
+    home_id:
+      name: Home ID
+      description: The ID of the smart home to start the tunnel for.
+      required: true
+      selector:
+        text:
+
+stop_tunnel:
+  name: Stop Tunnel
+  description: Stop the Cloudflare Tunnel for a smart home.
+  fields:
+    home_id:
+      name: Home ID
+      description: The ID of the smart home to stop the tunnel for.
+      required: true
+      selector:
+        text:
+
+get_status:
+  name: Get Status
+  description: Get the current tunnel and smart home status.
+  supports_response: optional
+  fields:
+    home_id:
+      name: Home ID
+      description: The ID of the smart home to get the status for.
+      required: true
+      selector:
+        text:

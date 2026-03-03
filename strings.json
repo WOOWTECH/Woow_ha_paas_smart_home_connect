@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "Choose authentication method"
+      },
+      "select_workspace": {
+        "title": "Select Workspace",
+        "description": "Choose the workspace that contains your smart home.",
+        "data": {
+          "workspace": "Workspace"
+        }
+      },
+      "select_home": {
+        "title": "Select Smart Home",
+        "description": "Choose the smart home to connect with this Home Assistant instance.",
+        "data": {
+          "home": "Smart Home"
+        }
+      }
+    },
+    "create_entry": {
+      "default": "Successfully connected to {name}"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
+      "invalid_auth": "Invalid authentication. Please re-authorize.",
+      "no_workspaces": "No workspaces found for your account.",
+      "no_homes": "No smart homes found in the selected workspace.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This smart home is already configured.",
+      "no_workspaces": "No workspaces found for your account. Please create a workspace first."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "tunnel_status": {
+        "name": "Tunnel Status",
+        "state": {
+          "connected": "Connected",
+          "disconnected": "Disconnected",
+          "error": "Error",
+          "starting": "Starting",
+          "unknown": "Unknown"
+        }
+      },
+      "tunnel_url": {
+        "name": "Tunnel URL"
+      }
+    },
+    "binary_sensor": {
+      "tunnel_connected": {
+        "name": "Tunnel Connected"
+      }
+    }
+  }
+}

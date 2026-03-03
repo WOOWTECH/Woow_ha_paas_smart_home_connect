@@ -1,8 +1,10 @@
 ---
 name: woow-paas-smart-home-init
-status: backlog
+status: completed
 created: 2026-03-02T14:34:05Z
-progress: 0%
+updated: 2026-03-03T00:51:15Z
+completed: 2026-03-03T00:51:15Z
+progress: 100%
 prd: .claude/prds/woow-paas-smart-home-init.md
 github: N/A (GitLab repo, local task management only)
 ---
