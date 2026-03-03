@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from http import HTTPStatus
+import logging
 from typing import Any
 
-from aiohttp import ClientResponseError
+import aiohttp
 
 from homeassistant.helpers.config_entry_oauth2_flow import OAuth2Session
 
@@ -56,6 +56,7 @@ class WoowPaasApiClient:
             AuthenticationError: On 401/403 responses.
             NotFoundError: On 404 responses.
             ApiError: On other non-success HTTP responses.
+
         """
         url = f"{self._base_url}{path}"
         resp = await self._session.async_request(method, url)
@@ -66,8 +67,12 @@ class WoowPaasApiClient:
         # Attempt to extract error detail from response body
         try:
             body = await resp.json()
-            detail = body.get("detail", body.get("error", ""))
-        except Exception:  # noqa: BLE001
+            detail = (
+                body.get("detail", body.get("error", ""))
+                if isinstance(body, dict)
+                else ""
+            )
+        except (ValueError, aiohttp.ContentTypeError):
             detail = await resp.text()
 
         message = f"{resp.status} {detail}" if detail else f"{resp.status}"
@@ -84,6 +89,7 @@ class WoowPaasApiClient:
 
         Returns:
             List of workspace dicts with keys: id, name, slug.
+
         """
         data = await self._request("GET", API_PATH_WORKSPACES)
         return data["workspaces"]
@@ -93,6 +99,7 @@ class WoowPaasApiClient:
 
         Returns:
             List of home dicts with keys: id, name, state, subdomain, tunnel_status.
+
         """
         path = API_PATH_WORKSPACE_HOMES.format(workspace_id=workspace_id)
         data = await self._request("GET", path)
@@ -103,6 +110,7 @@ class WoowPaasApiClient:
 
         Returns:
             Home dict with full to_dict() output from the backend.
+
         """
         path = API_PATH_HOME.format(home_id=home_id)
         data = await self._request("GET", path)
@@ -113,6 +121,7 @@ class WoowPaasApiClient:
 
         Returns:
             Dict with keys: tunnel_token, tunnel_id, subdomain.
+
         """
         path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=home_id)
         data = await self._request("GET", path)
@@ -124,6 +133,7 @@ class WoowPaasApiClient:
 
         Returns:
             Home dict with updated status fields.
+
         """
         path = API_PATH_HOME_STATUS.format(home_id=home_id)
         data = await self._request("GET", path)

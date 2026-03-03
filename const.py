@@ -1,6 +1,17 @@
 """Constants for the Woow PaaS Smart Home integration."""
 
+from enum import StrEnum
+
 from homeassistant.const import Platform
+
+
+class TunnelStatus(StrEnum):
+    """Tunnel connection status values."""
+
+    CONNECTED = "connected"
+    DISCONNECTED = "disconnected"
+    ERROR = "error"
+    UNKNOWN = "unknown"
 
 DOMAIN = "woow_paas_smart_home"
 

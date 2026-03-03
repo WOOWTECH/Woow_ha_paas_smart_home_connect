@@ -2,26 +2,25 @@
 
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_HOME_NAME, DOMAIN
+from . import WoowConfigEntry
+from .const import CONF_HOME_NAME, DOMAIN, TunnelStatus
 from .coordinator import TunnelCoordinator
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: WoowConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Woow PaaS Smart Home sensor entities."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: TunnelCoordinator = data["coordinator"]
+    coordinator = entry.runtime_data.coordinator
 
     async_add_entities([
         TunnelStatusSensor(coordinator, entry),
@@ -32,13 +31,15 @@ async def async_setup_entry(
 class TunnelStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
     """Sensor showing the tunnel connection status text."""
 
+    _attr_device_class = SensorDeviceClass.ENUM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:tunnel"
     _attr_has_entity_name = True
+    _attr_options = [status.value for status in TunnelStatus]
     _attr_translation_key = "tunnel_status"
 
     def __init__(
-        self, coordinator: TunnelCoordinator, entry: ConfigEntry
+        self, coordinator: TunnelCoordinator, entry: WoowConfigEntry
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
@@ -67,7 +68,7 @@ class TunnelUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
     _attr_translation_key = "tunnel_url"
 
     def __init__(
-        self, coordinator: TunnelCoordinator, entry: ConfigEntry
+        self, coordinator: TunnelCoordinator, entry: WoowConfigEntry
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)

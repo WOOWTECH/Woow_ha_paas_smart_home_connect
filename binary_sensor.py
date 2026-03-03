@@ -6,25 +6,24 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import WoowConfigEntry
 from .const import CONF_HOME_NAME, DOMAIN
 from .coordinator import TunnelCoordinator
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: WoowConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Woow PaaS Smart Home binary sensor entities."""
-    data = hass.data[DOMAIN][entry.entry_id]
-    coordinator: TunnelCoordinator = data["coordinator"]
+    coordinator = entry.runtime_data.coordinator
 
     async_add_entities([
         TunnelConnectedBinarySensor(coordinator, entry),
@@ -42,7 +41,7 @@ class TunnelConnectedBinarySensor(
     _attr_translation_key = "tunnel_connected"
 
     def __init__(
-        self, coordinator: TunnelCoordinator, entry: ConfigEntry
+        self, coordinator: TunnelCoordinator, entry: WoowConfigEntry
     ) -> None:
         """Initialize the binary sensor."""
         super().__init__(coordinator)

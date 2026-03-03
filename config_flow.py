@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from http import HTTPStatus
 import logging
 from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlowResult
@@ -13,6 +15,7 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
     async_oauth2_request,
 )
 
+from .api_client import ApiError, AuthenticationError
 from .const import (
     API_BASE_URL,
     API_PATH_HOME_TUNNEL_TOKEN,
@@ -27,8 +30,10 @@ from .const import (
     CONF_WORKSPACE_NAME,
     DOMAIN,
     ERR_CANNOT_CONNECT,
+    ERR_INVALID_AUTH,
     ERR_NO_HOMES,
     ERR_NO_WORKSPACES,
+    ERR_UNKNOWN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,8 +72,25 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         resp = await async_oauth2_request(
             self.hass, self._oauth_data["token"], method, url
         )
-        resp.raise_for_status()
-        return await resp.json()
+        if resp.status == HTTPStatus.OK:
+            return await resp.json()
+
+        # Extract error detail from response body
+        try:
+            body = await resp.json()
+            detail = (
+                body.get("detail", body.get("error", ""))
+                if isinstance(body, dict)
+                else ""
+            )
+        except (ValueError, aiohttp.ContentTypeError):
+            detail = await resp.text()
+
+        message = f"{resp.status} {detail}" if detail else str(resp.status)
+
+        if resp.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+            raise AuthenticationError(resp.status, message)
+        raise ApiError(resp.status, message)
 
     async def async_step_select_workspace(
         self, user_input: dict[str, Any] | None = None
@@ -89,9 +111,25 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         try:
             data = await self._async_api_request("GET", API_PATH_WORKSPACES)
             self._workspaces = data["workspaces"]
-        except Exception:
+        except AuthenticationError:
+            _LOGGER.warning("Authentication failed while fetching workspaces")
+            errors["base"] = ERR_INVALID_AUTH
+            return self.async_show_form(
+                step_id="select_workspace",
+                data_schema=vol.Schema({}),
+                errors=errors,
+            )
+        except (ApiError, aiohttp.ClientError):
             _LOGGER.exception("Failed to fetch workspaces")
             errors["base"] = ERR_CANNOT_CONNECT
+            return self.async_show_form(
+                step_id="select_workspace",
+                data_schema=vol.Schema({}),
+                errors=errors,
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected error fetching workspaces")
+            errors["base"] = ERR_UNKNOWN
             return self.async_show_form(
                 step_id="select_workspace",
                 data_schema=vol.Schema({}),
@@ -141,9 +179,15 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 )
                 data = await self._async_api_request("GET", path)
                 self._homes = data["homes"]
-            except Exception:
+            except AuthenticationError:
+                _LOGGER.warning("Authentication failed while fetching homes")
+                errors["base"] = ERR_INVALID_AUTH
+            except (ApiError, aiohttp.ClientError):
                 _LOGGER.exception("Failed to fetch homes")
                 errors["base"] = ERR_CANNOT_CONNECT
+            except Exception:
+                _LOGGER.exception("Unexpected error fetching homes")
+                errors["base"] = ERR_UNKNOWN
 
         if errors:
             return self.async_show_form(
@@ -187,12 +231,26 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         try:
             path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=home_id)
             tunnel_data = await self._async_api_request("GET", path)
-        except Exception:
+        except AuthenticationError:
+            _LOGGER.warning("Authentication failed while fetching tunnel token")
+            return self.async_show_form(
+                step_id="select_home",
+                data_schema=vol.Schema({}),
+                errors={"base": ERR_INVALID_AUTH},
+            )
+        except (ApiError, aiohttp.ClientError):
             _LOGGER.exception("Failed to fetch tunnel token")
             return self.async_show_form(
                 step_id="select_home",
                 data_schema=vol.Schema({}),
                 errors={"base": ERR_CANNOT_CONNECT},
+            )
+        except Exception:
+            _LOGGER.exception("Unexpected error fetching tunnel token")
+            return self.async_show_form(
+                step_id="select_home",
+                data_schema=vol.Schema({}),
+                errors={"base": ERR_UNKNOWN},
             )
 
         return self.async_create_entry(

@@ -7,12 +7,14 @@ import logging
 import os
 from pathlib import Path
 import platform
+import shutil
 import signal
 import tarfile
 
 import aiohttp
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ class CloudflaredManager:
             hass: Home Assistant instance.
             install_dir: Directory to store cloudflared binary.
                          Defaults to ``{config_dir}/.woow_paas_smart_home/``.
+
         """
         self.hass = hass
 
@@ -67,6 +70,9 @@ class CloudflaredManager:
 
         self._binary_path: Path = self._install_dir / _BINARY_NAME
         self._process: asyncio.subprocess.Process | None = None
+        self._lock = asyncio.Lock()
+        self._stdout_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Binary management
@@ -121,18 +127,18 @@ class CloudflaredManager:
             _LOGGER.info(
                 "cloudflared binary ready at %s", self._binary_path
             )
-            return True
-
-        except Exception:
+        except (aiohttp.ClientError, tarfile.TarError, PermissionError, OSError):
             _LOGGER.exception("Failed to download cloudflared binary")
             return False
+        else:
+            return True
 
     async def _download_binary(self, url: str) -> None:
         """Download a raw binary file (Linux)."""
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                resp.raise_for_status()
-                data = await resp.read()
+        session = async_get_clientsession(self.hass)
+        async with session.get(url, allow_redirects=True) as resp:
+            resp.raise_for_status()
+            data = await resp.read()
 
         await self.hass.async_add_executor_job(
             self._binary_path.write_bytes, data
@@ -143,20 +149,40 @@ class CloudflaredManager:
         tgz_path = self._install_dir / "cloudflared.tgz"
 
         # Download archive
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                resp.raise_for_status()
-                data = await resp.read()
+        session = async_get_clientsession(self.hass)
+        async with session.get(url, allow_redirects=True) as resp:
+            resp.raise_for_status()
+            data = await resp.read()
 
         await self.hass.async_add_executor_job(tgz_path.write_bytes, data)
 
         # Extract and clean up in executor
         def _extract_and_cleanup() -> None:
             with tarfile.open(str(tgz_path), "r:gz") as tar:
-                tar.extractall(path=str(self._install_dir))  # noqa: S202
+                tar.extractall(
+                    path=str(self._install_dir), filter="data"
+                )
             tgz_path.unlink()
 
         await self.hass.async_add_executor_job(_extract_and_cleanup)
+
+    async def cleanup_binary(self) -> None:
+        """Remove the install directory and its contents."""
+        if self._install_dir.is_dir():
+            try:
+                await self.hass.async_add_executor_job(
+                    shutil.rmtree, str(self._install_dir)
+                )
+                _LOGGER.info(
+                    "Removed cloudflared install directory %s",
+                    self._install_dir,
+                )
+            except OSError:
+                _LOGGER.warning(
+                    "Failed to remove cloudflared install directory %s",
+                    self._install_dir,
+                    exc_info=True,
+                )
 
     # ------------------------------------------------------------------
     # Tunnel lifecycle
@@ -169,7 +195,13 @@ class CloudflaredManager:
             tunnel_token: Cloudflare tunnel token.
 
         Returns ``True`` when the process was started successfully.
+
         """
+        async with self._lock:
+            return await self._start_tunnel_locked(tunnel_token)
+
+    async def _start_tunnel_locked(self, tunnel_token: str) -> bool:
+        """Start tunnel (must be called while holding self._lock)."""
         if self.is_running:
             _LOGGER.warning("cloudflared tunnel is already running")
             return True
@@ -203,11 +235,11 @@ class CloudflaredManager:
             )
 
             # Start background tasks to stream stdout/stderr to logger
-            asyncio.ensure_future(
+            self._stdout_task = asyncio.create_task(
                 self._stream_output(self._process.stdout, logging.DEBUG)
             )
-            asyncio.ensure_future(
-                self._stream_output(self._process.stderr, logging.DEBUG)
+            self._stderr_task = asyncio.create_task(
+                self._stream_output(self._process.stderr, logging.WARNING)
             )
 
             # Give the process a moment to start
@@ -224,12 +256,12 @@ class CloudflaredManager:
             _LOGGER.info(
                 "cloudflared tunnel started with PID %s", self._process.pid
             )
-            return True
-
-        except Exception:
+        except OSError:
             _LOGGER.exception("Failed to start cloudflared tunnel")
             self._process = None
             return False
+        else:
+            return True
 
     async def stop_tunnel(self) -> bool:
         """Stop the running cloudflared process gracefully.
@@ -238,6 +270,11 @@ class CloudflaredManager:
 
         Returns ``True`` when the process has been stopped (or was not running).
         """
+        async with self._lock:
+            return await self._stop_tunnel_locked()
+
+    async def _stop_tunnel_locked(self) -> bool:
+        """Stop tunnel (must be called while holding self._lock)."""
         if self._process is None:
             _LOGGER.debug("No cloudflared process to stop")
             return True
@@ -248,6 +285,7 @@ class CloudflaredManager:
                 self._process.returncode,
             )
             self._process = None
+            self._cancel_stream_tasks()
             return True
 
         pid = self._process.pid
@@ -258,24 +296,40 @@ class CloudflaredManager:
         except ProcessLookupError:
             _LOGGER.debug("cloudflared process already gone")
             self._process = None
+            self._cancel_stream_tasks()
             return True
 
         try:
             await asyncio.wait_for(self._process.wait(), timeout=5.0)
             _LOGGER.info("cloudflared tunnel stopped gracefully")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.warning(
                 "cloudflared did not stop within 5s, sending SIGKILL"
             )
             try:
                 self._process.kill()
-                await self._process.wait()
+                await asyncio.wait_for(self._process.wait(), timeout=3.0)
+                _LOGGER.info("cloudflared tunnel killed")
             except ProcessLookupError:
-                pass
-            _LOGGER.info("cloudflared tunnel killed")
+                _LOGGER.debug("cloudflared process already gone after SIGKILL")
+            except TimeoutError:
+                _LOGGER.error(
+                    "cloudflared process (PID %s) did not terminate after "
+                    "SIGKILL; the process may still be running",
+                    pid,
+                )
 
         self._process = None
+        self._cancel_stream_tasks()
         return True
+
+    def _cancel_stream_tasks(self) -> None:
+        """Cancel stdout/stderr streaming tasks."""
+        for task in (self._stdout_task, self._stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._stdout_task = None
+        self._stderr_task = None
 
     @property
     def is_running(self) -> bool:

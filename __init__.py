@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
-from typing import Any
 
+import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
@@ -15,19 +16,21 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.config_entry_oauth2_flow import (
     OAuth2Session,
     async_get_config_entry_implementation,
 )
 from homeassistant.helpers.typing import ConfigType
 
-from .api_client import WoowPaasApiClient
+from .api_client import ApiError, AuthenticationError, WoowPaasApiClient
 from .cloudflared_manager import CloudflaredManager
 from .const import (
     API_BASE_URL,
     CONF_HOME_ID,
     CONF_HOME_NAME,
     CONF_SUBDOMAIN,
+    CONF_TUNNEL_ID,
     CONF_TUNNEL_TOKEN,
     CONF_WORKSPACE_ID,
     DOMAIN,
@@ -44,87 +47,88 @@ SERVICE_SCHEMA = vol.Schema(
     {vol.Required("home_id"): vol.Coerce(str)}
 )
 
-type WoowConfigEntry = ConfigEntry
+type WoowConfigEntry = ConfigEntry[WoowRuntimeData]
 
 
-def _find_entry_data_by_home_id(
+@dataclass(frozen=True)
+class WoowRuntimeData:
+    """Runtime data stored in entry.runtime_data for each config entry."""
+
+    api_client: WoowPaasApiClient
+    tunnel_manager: CloudflaredManager
+    coordinator: TunnelCoordinator
+    session: OAuth2Session
+
+
+def _find_entry_and_data(
     hass: HomeAssistant, home_id: str
-) -> dict[str, Any] | None:
-    """Find the entry data dict that matches a given home_id."""
-    for entry_id, data in hass.data.get(DOMAIN, {}).items():
-        entry = hass.config_entries.async_get_entry(entry_id)
-        if entry and str(entry.data.get(CONF_HOME_ID)) == str(home_id):
-            return data
+) -> tuple[WoowConfigEntry, WoowRuntimeData] | None:
+    """Find the loaded config entry and runtime data that match a given home_id."""
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        if str(entry.data.get(CONF_HOME_ID)) == str(home_id):
+            runtime_data = getattr(entry, "runtime_data", None)
+            if runtime_data is not None:
+                return entry, runtime_data
     return None
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Woow PaaS Smart Home component."""
-    hass.data.setdefault(DOMAIN, {})
 
     async def _handle_start_tunnel(call: ServiceCall) -> None:
         """Handle start_tunnel service call."""
         home_id = call.data["home_id"]
-        entry_data = _find_entry_data_by_home_id(hass, home_id)
-        if entry_data is None:
-            _LOGGER.error("No config entry found for home_id=%s", home_id)
-            return
+        result = _find_entry_and_data(hass, home_id)
+        if result is None:
+            raise HomeAssistantError(
+                f"No config entry found for home_id={home_id}"
+            )
+        entry, runtime_data = result
 
-        manager: CloudflaredManager = entry_data["tunnel_manager"]
-        # Find the tunnel token from the config entry
-        for entry_id, data in hass.data[DOMAIN].items():
-            if data is entry_data:
-                entry = hass.config_entries.async_get_entry(entry_id)
-                if entry:
-                    tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
-                    if tunnel_token:
-                        await manager.ensure_binary()
-                        await manager.start_tunnel(tunnel_token)
-                    else:
-                        _LOGGER.error(
-                            "No tunnel token for home_id=%s", home_id
-                        )
-                break
+        tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
+        if not tunnel_token:
+            raise HomeAssistantError(
+                f"No tunnel token for home_id={home_id}"
+            )
+
+        manager = runtime_data.tunnel_manager
+        if not await manager.ensure_binary():
+            raise HomeAssistantError("Failed to download cloudflared binary")
+
+        if not await manager.start_tunnel(tunnel_token):
+            raise HomeAssistantError("Failed to start cloudflared tunnel")
 
     async def _handle_stop_tunnel(call: ServiceCall) -> None:
         """Handle stop_tunnel service call."""
         home_id = call.data["home_id"]
-        entry_data = _find_entry_data_by_home_id(hass, home_id)
-        if entry_data is None:
-            _LOGGER.error("No config entry found for home_id=%s", home_id)
-            return
+        result = _find_entry_and_data(hass, home_id)
+        if result is None:
+            raise HomeAssistantError(
+                f"No config entry found for home_id={home_id}"
+            )
+        _, runtime_data = result
 
-        manager: CloudflaredManager = entry_data["tunnel_manager"]
-        await manager.stop_tunnel()
+        if not await runtime_data.tunnel_manager.stop_tunnel():
+            raise HomeAssistantError("Failed to stop cloudflared tunnel")
 
     async def _handle_get_status(call: ServiceCall) -> ServiceResponse:
         """Handle get_status service call."""
         home_id = call.data["home_id"]
-        entry_data = _find_entry_data_by_home_id(hass, home_id)
-        if entry_data is None:
-            _LOGGER.error("No config entry found for home_id=%s", home_id)
-            return {"error": f"No config entry found for home_id={home_id}"}
+        result = _find_entry_and_data(hass, home_id)
+        if result is None:
+            raise HomeAssistantError(
+                f"No config entry found for home_id={home_id}"
+            )
+        entry, runtime_data = result
 
-        manager: CloudflaredManager = entry_data["tunnel_manager"]
-
-        # Find the config entry for additional info
-        entry_info: dict[str, Any] = {}
-        for entry_id, data in hass.data[DOMAIN].items():
-            if data is entry_data:
-                entry = hass.config_entries.async_get_entry(entry_id)
-                if entry:
-                    entry_info = {
-                        "home_id": str(entry.data.get(CONF_HOME_ID, "")),
-                        "home_name": entry.data.get(CONF_HOME_NAME, ""),
-                        "workspace_id": str(
-                            entry.data.get(CONF_WORKSPACE_ID, "")
-                        ),
-                    }
-                break
-
+        coord_data = runtime_data.coordinator.data
         return {
-            "tunnel_running": manager.is_running,
-            **entry_info,
+            "tunnel_running": runtime_data.tunnel_manager.is_running,
+            "tunnel_status": coord_data.status if coord_data else "unknown",
+            "tunnel_connected": coord_data.is_connected if coord_data else False,
+            "home_id": str(entry.data.get(CONF_HOME_ID, "")),
+            "home_name": entry.data.get(CONF_HOME_NAME, ""),
+            "workspace_id": str(entry.data.get(CONF_WORKSPACE_ID, "")),
         }
 
     hass.services.async_register(
@@ -158,39 +162,75 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
     api_client = WoowPaasApiClient(session, API_BASE_URL)
     tunnel_manager = CloudflaredManager(hass)
 
+    # Re-fetch tunnel token on startup to ensure freshness
+    home_id: int = entry.data[CONF_HOME_ID]
+    try:
+        token_data = await api_client.get_tunnel_token(home_id)
+        new_data = {
+            **entry.data,
+            CONF_TUNNEL_TOKEN: token_data["tunnel_token"],
+            CONF_TUNNEL_ID: token_data["tunnel_id"],
+            CONF_SUBDOMAIN: token_data["subdomain"],
+        }
+        hass.config_entries.async_update_entry(entry, data=new_data)
+        _LOGGER.debug("Refreshed tunnel token for home %s", home_id)
+    except AuthenticationError as err:
+        raise ConfigEntryAuthFailed(
+            "Authentication failed during tunnel token refresh"
+        ) from err
+    except (ApiError, aiohttp.ClientError, TimeoutError):
+        _LOGGER.warning(
+            "Failed to refresh tunnel token on startup due to transient error, "
+            "using cached token",
+            exc_info=True,
+        )
+
     coordinator = TunnelCoordinator(
         hass,
         api_client=api_client,
         tunnel_manager=tunnel_manager,
-        home_id=entry.data.get(CONF_HOME_ID),
+        home_id=home_id,
         subdomain=entry.data.get(CONF_SUBDOMAIN, ""),
+        config_entry=entry,
     )
     await coordinator.async_config_entry_first_refresh()
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "api_client": api_client,
-        "tunnel_manager": tunnel_manager,
-        "coordinator": coordinator,
-        "session": session,
-    }
+    entry.runtime_data = WoowRuntimeData(
+        api_client=api_client,
+        tunnel_manager=tunnel_manager,
+        coordinator=coordinator,
+        session=session,
+    )
 
     # Start tunnel in background (non-blocking)
     async def _start_tunnel_background() -> None:
         """Download cloudflared binary and start tunnel in background."""
         try:
             await asyncio.sleep(1)  # let HA finish startup
-            await tunnel_manager.ensure_binary()
+            if not await tunnel_manager.ensure_binary():
+                _LOGGER.error("Failed to download cloudflared binary in background")
+                return
             tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
-            if tunnel_token:
-                await tunnel_manager.start_tunnel(tunnel_token)
+            if not tunnel_token:
+                _LOGGER.error(
+                    "No tunnel token available for home %s; tunnel will not start",
+                    home_id,
+                )
+                return
+            if not await tunnel_manager.start_tunnel(tunnel_token):
+                _LOGGER.error(
+                    "Failed to start cloudflared tunnel for home %s in background",
+                    home_id,
+                )
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            _LOGGER.warning(
-                "Failed to start tunnel in background", exc_info=True
-            )
+            _LOGGER.exception("Failed to start tunnel in background")
 
-    hass.async_create_task(
-        _start_tunnel_background(), eager_start=False
+    entry.async_create_background_task(
+        hass,
+        _start_tunnel_background(),
+        f"woow_tunnel_start_{entry.entry_id}",
     )
 
     # Forward entry setup to sensor and binary_sensor platforms
@@ -203,20 +243,20 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: WoowConfigEntry
 ) -> bool:
     """Unload a Woow PaaS Smart Home config entry."""
-    entry_data = hass.data[DOMAIN].get(entry.entry_id)
+    await entry.runtime_data.tunnel_manager.stop_tunnel()
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Stop the cloudflared tunnel
-    if entry_data:
-        manager: CloudflaredManager = entry_data["tunnel_manager"]
-        await manager.stop_tunnel()
 
-    # Unload platforms
-    unload_ok = await hass.config_entries.async_unload_platforms(
-        entry, PLATFORMS
-    )
-
-    # Clean up hass.data
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-
-    return unload_ok
+async def async_remove_entry(
+    hass: HomeAssistant, entry: WoowConfigEntry
+) -> None:
+    """Clean up resources when a config entry is removed."""
+    # Only clean up binary if no other entries remain for this domain
+    remaining = [
+        e
+        for e in hass.config_entries.async_entries(DOMAIN)
+        if e.entry_id != entry.entry_id
+    ]
+    if not remaining:
+        tunnel_manager = CloudflaredManager(hass)
+        await tunnel_manager.cleanup_binary()

@@ -33,5 +33,27 @@
       "already_configured": "This smart home is already configured.",
       "no_workspaces": "No workspaces found for your account. Please create a workspace first."
     }
+  },
+  "entity": {
+    "sensor": {
+      "tunnel_status": {
+        "name": "Tunnel Status",
+        "state": {
+          "connected": "Connected",
+          "disconnected": "Disconnected",
+          "error": "Error",
+          "starting": "Starting",
+          "unknown": "Unknown"
+        }
+      },
+      "tunnel_url": {
+        "name": "Tunnel URL"
+      }
+    },
+    "binary_sensor": {
+      "tunnel_connected": {
+        "name": "Tunnel Connected"
+      }
+    }
   }
 }
