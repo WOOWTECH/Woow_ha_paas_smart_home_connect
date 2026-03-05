@@ -233,7 +233,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
         f"woow_tunnel_start_{entry.entry_id}",
     )
 
-    # Forward entry setup to sensor and binary_sensor platforms
+    # Forward entry setup to sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True

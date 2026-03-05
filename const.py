@@ -16,7 +16,7 @@ class TunnelStatus(StrEnum):
 DOMAIN = "woow_paas_smart_home"
 
 # --- API ---
-API_BASE_URL = "https://api.woow-paas.com"
+API_BASE_URL = "https://odoo-stg.woowtech.io"
 
 # API endpoint paths
 API_PATH_WORKSPACES = "/api/smarthome/workspaces"
@@ -39,7 +39,7 @@ CONF_TUNNEL_ID = "tunnel_id"
 CONF_SUBDOMAIN = "subdomain"
 
 # --- Platforms ---
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR]
 
 # --- Error constants ---
 ERR_CANNOT_CONNECT = "cannot_connect"

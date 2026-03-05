@@ -53,6 +53,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self._homes: list[dict[str, Any]] = []
         self._selected_workspace_id: int | None = None
         self._selected_workspace_name: str | None = None
+        _LOGGER.debug("ConfigFlow initialized for domain %s", DOMAIN)
 
     @property
     def logger(self) -> logging.Logger:
@@ -63,15 +64,25 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self, data: dict[str, Any]
     ) -> ConfigFlowResult:
         """Handle OAuth2 completion and proceed to workspace selection."""
+        _LOGGER.debug(
+            "async_oauth_create_entry called; data keys: %s, "
+            "token keys: %s, token_type: %s, expires_in: %s",
+            list(data.keys()),
+            list(data["token"].keys()) if "token" in data else "<no token>",
+            data.get("token", {}).get("token_type"),
+            data.get("token", {}).get("expires_in"),
+        )
         self._oauth_data = data
         return await self.async_step_select_workspace()
 
     async def _async_api_request(self, method: str, path: str) -> Any:
         """Make an authenticated API request using the OAuth2 token."""
         url = f"{API_BASE_URL}{path}"
+        _LOGGER.debug("API request: %s %s", method, url)
         resp = await async_oauth2_request(
             self.hass, self._oauth_data["token"], method, url
         )
+        _LOGGER.debug("API response: %s %s -> HTTP %s", method, url, resp.status)
         if resp.status == HTTPStatus.OK:
             return await resp.json()
 
@@ -100,6 +111,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         if user_input is not None:
             selected = user_input["workspace"]
+            _LOGGER.debug("User selected workspace: %s", selected)
             for ws in self._workspaces:
                 if str(ws["id"]) == selected:
                     self._selected_workspace_id = ws["id"]
@@ -108,9 +120,11 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             return await self.async_step_select_home()
 
         # Fetch workspaces from API
+        _LOGGER.debug("Fetching workspaces from API")
         try:
             data = await self._async_api_request("GET", API_PATH_WORKSPACES)
             self._workspaces = data["workspaces"]
+            _LOGGER.debug("Fetched %d workspace(s)", len(self._workspaces))
         except AuthenticationError:
             _LOGGER.warning("Authentication failed while fetching workspaces")
             errors["base"] = ERR_INVALID_AUTH
@@ -164,6 +178,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         if user_input is not None:
             selected = user_input["home"]
+            _LOGGER.debug("User selected home: %s", selected)
             for home in self._homes:
                 if str(home["id"]) == selected:
                     return await self._async_create_entry(
@@ -173,12 +188,16 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             errors["base"] = ERR_CANNOT_CONNECT
 
         if not errors:
+            _LOGGER.debug(
+                "Fetching homes for workspace_id=%s", self._selected_workspace_id
+            )
             try:
                 path = API_PATH_WORKSPACE_HOMES.format(
                     workspace_id=self._selected_workspace_id
                 )
                 data = await self._async_api_request("GET", path)
                 self._homes = data["homes"]
+                _LOGGER.debug("Fetched %d home(s)", len(self._homes))
             except AuthenticationError:
                 _LOGGER.warning("Authentication failed while fetching homes")
                 errors["base"] = ERR_INVALID_AUTH
@@ -225,12 +244,21 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self, home_id: int, home_name: str
     ) -> ConfigFlowResult:
         """Fetch tunnel token and create the config entry."""
+        _LOGGER.debug(
+            "Creating config entry for home_id=%s, home_name=%s", home_id, home_name
+        )
         await self.async_set_unique_id(str(home_id))
         self._abort_if_unique_id_configured()
 
+        _LOGGER.debug("Fetching tunnel token for home_id=%s", home_id)
         try:
             path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=home_id)
             tunnel_data = await self._async_api_request("GET", path)
+            _LOGGER.debug(
+                "Tunnel token fetched; tunnel_id=%s, subdomain=%s",
+                tunnel_data.get("tunnel_id"),
+                tunnel_data.get("subdomain"),
+            )
         except AuthenticationError:
             _LOGGER.warning("Authentication failed while fetching tunnel token")
             return self.async_show_form(

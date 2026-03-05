@@ -103,7 +103,7 @@ class CloudflaredManager:
         try:
             # Ensure install directory exists
             await self.hass.async_add_executor_job(
-                self._install_dir.mkdir, True, True  # parents, exist_ok
+                self._install_dir.mkdir, 0o755, True, True  # mode, parents, exist_ok
             )
 
             _LOGGER.info(

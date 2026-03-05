@@ -49,11 +49,6 @@
       "tunnel_url": {
         "name": "Tunnel URL"
       }
-    },
-    "binary_sensor": {
-      "tunnel_connected": {
-        "name": "Tunnel Connected"
-      }
     }
   }
 }
