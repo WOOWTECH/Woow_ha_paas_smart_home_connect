@@ -17,7 +17,7 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv
 from homeassistant.helpers.config_entry_oauth2_flow import (
     OAuth2Session,
     async_get_config_entry_implementation,
@@ -44,6 +44,8 @@ from .coordinator import TunnelCoordinator
 from .oauth2 import create_implementation
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SERVICE_SCHEMA = vol.Schema(
     {vol.Required("home_id"): vol.Coerce(str)}

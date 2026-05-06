@@ -23,7 +23,6 @@ stop_tunnel:
 get_status:
   name: Get Status
   description: Get the current tunnel and smart home status.
-  supports_response: optional
   fields:
     home_id:
       name: Home ID
