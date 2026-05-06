@@ -29,6 +29,12 @@ API_PATH_HOME_STATUS = "/api/smarthome/homes/{home_id}/status"
 OAUTH2_AUTHORIZE = "/oauth2/authorize"
 OAUTH2_TOKEN = "/oauth2/token"
 
+# OAuth2 public client (PKCE-only, no client_secret).
+# This client_id is registered as a public client on paas-platform and may be
+# committed to a public repo. See sm-api-doc §3 / §4 for migration spec.
+OAUTH2_CLIENT_ID = "woow-ha-smart-home"
+OAUTH2_SCOPES = "smarthome:read smarthome:tunnel workspace:read"
+
 # --- Config entry data keys ---
 CONF_WORKSPACE_ID = "workspace_id"
 CONF_WORKSPACE_NAME = "workspace_name"

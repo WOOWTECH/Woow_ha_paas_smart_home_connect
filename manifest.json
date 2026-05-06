@@ -3,7 +3,7 @@
   "name": "Woow PaaS Smart Home",
   "codeowners": ["@eugenechen0514"],
   "config_flow": true,
-  "dependencies": ["application_credentials"],
+  "dependencies": [],
   "documentation": "https://gitlab.com/woow3/woow-paas-smart-home",
   "iot_class": "cloud_polling",
   "requirements": [],

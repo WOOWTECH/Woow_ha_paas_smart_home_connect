@@ -17,6 +17,7 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.config_entry_oauth2_flow import (
     OAuth2Session,
     async_get_config_entry_implementation,
@@ -40,6 +41,7 @@ from .const import (
     SERVICE_STOP_TUNNEL,
 )
 from .coordinator import TunnelCoordinator
+from .oauth2 import create_implementation
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,6 +76,9 @@ def _find_entry_and_data(
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Woow PaaS Smart Home component."""
+    config_entry_oauth2_flow.async_register_implementation(
+        hass, DOMAIN, create_implementation(hass)
+    )
 
     async def _handle_start_tunnel(call: ServiceCall) -> None:
         """Handle start_tunnel service call."""
