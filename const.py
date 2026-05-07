@@ -16,7 +16,7 @@ class TunnelStatus(StrEnum):
 DOMAIN = "woow_paas_smart_home"
 
 # --- API ---
-API_BASE_URL = "https://odoo-stg.woowtech.io"
+API_BASE_URL = "https://stg.woowtech.io"
 
 # API endpoint paths
 API_PATH_WORKSPACES = "/api/smarthome/workspaces"
