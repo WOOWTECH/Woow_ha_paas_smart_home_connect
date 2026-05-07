@@ -10,6 +10,7 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.config_entry_oauth2_flow import (
     AbstractOAuth2FlowHandler,
     async_oauth2_request,
@@ -35,6 +36,7 @@ from .const import (
     ERR_NO_WORKSPACES,
     ERR_UNKNOWN,
 )
+from .oauth2 import create_implementation
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,6 +61,23 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
     def logger(self) -> logging.Logger:
         """Return logger."""
         return _LOGGER
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Lazily register the PKCE OAuth implementation, then start the flow.
+
+        HA only invokes ``async_setup`` for integrations referenced by YAML or
+        with an existing config entry, so for first-time UI-driven setup the
+        impl must be registered when the flow starts.
+        """
+        if not await config_entry_oauth2_flow.async_get_implementations(
+            self.hass, self.DOMAIN
+        ):
+            config_entry_oauth2_flow.async_register_implementation(
+                self.hass, self.DOMAIN, create_implementation(self.hass)
+            )
+        return await super().async_step_user(user_input)
 
     async def async_oauth_create_entry(
         self, data: dict[str, Any]
