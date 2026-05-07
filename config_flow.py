@@ -128,7 +128,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         """Handle workspace selection step."""
         errors: dict[str, str] = {}
 
-        if user_input is not None:
+        if user_input is not None and "workspace" in user_input:
             selected = user_input["workspace"]
             _LOGGER.debug("User selected workspace: %s", selected)
             for ws in self._workspaces:
@@ -195,7 +195,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         """Handle smart home selection step."""
         errors: dict[str, str] = {}
 
-        if user_input is not None:
+        if user_input is not None and "home" in user_input:
             selected = user_input["home"]
             _LOGGER.debug("User selected home: %s", selected)
             for home in self._homes:
@@ -235,11 +235,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             )
 
         if not self._homes:
-            return self.async_show_form(
-                step_id="select_home",
-                data_schema=vol.Schema({}),
-                errors={"base": ERR_NO_HOMES},
-            )
+            return self.async_abort(reason=ERR_NO_HOMES)
 
         # Auto-skip if only one home
         if len(self._homes) == 1:
