@@ -16,7 +16,7 @@ class TunnelStatus(StrEnum):
 DOMAIN = "woow_paas_smart_home"
 
 # --- API ---
-API_BASE_URL = "https://odoo-stg.woowtech.io"
+API_BASE_URL = "https://stg.woowtech.io"
 
 # API endpoint paths
 API_PATH_WORKSPACES = "/api/smarthome/workspaces"
@@ -28,6 +28,12 @@ API_PATH_HOME_STATUS = "/api/smarthome/homes/{home_id}/status"
 # OAuth2 endpoints
 OAUTH2_AUTHORIZE = "/oauth2/authorize"
 OAUTH2_TOKEN = "/oauth2/token"
+
+# OAuth2 public client (PKCE-only, no client_secret).
+# This client_id is registered as a public client on paas-platform and may be
+# committed to a public repo. See sm-api-doc §3 / §4 for migration spec.
+OAUTH2_CLIENT_ID = "woow-ha-smart-home"
+OAUTH2_SCOPES = "smarthome:read smarthome:tunnel workspace:read"
 
 # --- Config entry data keys ---
 CONF_WORKSPACE_ID = "workspace_id"
