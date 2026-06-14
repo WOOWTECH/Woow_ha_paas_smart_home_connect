@@ -220,10 +220,12 @@ class RouteUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
     being removed) when its route disappears from PaaS, so history and automation
     references survive a transient drop or a route the user can re-add later.
 
-    The URL value and attributes track PaaS edits live every poll, but the
-    display name and entity_id are fixed at first creation (keyed on route id for
-    stability). Renaming a route's subdomain_prefix in PaaS is reflected in the
-    value/attributes immediately; the friendly name updates only on reload.
+    Editable route fields (service_url, is_protected, ...) update live on the
+    same entity every poll, because the route keeps its id. The hostname /
+    subdomain_prefix is immutable in PaaS (paas-platform confirmed): "renaming"
+    a route is a delete+create that yields a NEW route id, so this entity goes
+    unavailable and a fresh entity appears — its history does not carry over.
+    See README / sm-api-doc.
     """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
