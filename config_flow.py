@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from http import HTTPStatus
 import logging
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlowResult
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlowResult
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.config_entry_oauth2_flow import (
     AbstractOAuth2FlowHandler,
@@ -20,10 +21,13 @@ from .api_client import ApiError, AuthenticationError
 from .const import (
     API_BASE_URL,
     API_PATH_HOME_TUNNEL_TOKEN,
+    API_PATH_SA_ACCESS_TUNNEL_TOKEN,
+    API_PATH_SA_WORKSPACE_ACCESSES,
     API_PATH_WORKSPACE_HOMES,
     API_PATH_WORKSPACES,
     CONF_HOME_ID,
     CONF_HOME_NAME,
+    CONF_PRODUCT_TYPE,
     CONF_SUBDOMAIN,
     CONF_TUNNEL_ID,
     CONF_TUNNEL_TOKEN,
@@ -32,9 +36,12 @@ from .const import (
     DOMAIN,
     ERR_CANNOT_CONNECT,
     ERR_INVALID_AUTH,
+    ERR_NO_ACCESSES,
     ERR_NO_HOMES,
     ERR_NO_WORKSPACES,
     ERR_UNKNOWN,
+    PRODUCT_SECURITY_ACCESS,
+    PRODUCT_SMART_HOME,
 )
 from .oauth2 import create_implementation
 
@@ -53,6 +60,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self._oauth_data: dict[str, Any] = {}
         self._workspaces: list[dict[str, Any]] = []
         self._homes: list[dict[str, Any]] = []
+        self._accesses: list[dict[str, Any]] = []
         self._selected_workspace_id: int | None = None
         self._selected_workspace_name: str | None = None
         _LOGGER.debug("ConfigFlow initialized for domain %s", DOMAIN)
@@ -79,18 +87,50 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             )
         return await super().async_step_user(user_input)
 
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle re-authentication when the stored OAuth token is rejected.
+
+        Triggered by ConfigEntryAuthFailed (e.g. a 401/403 from the API, or a
+        token lacking a now-required scope). Re-running OAuth grants the current
+        scope set; the existing entry's workspace/instance/tunnel data is kept.
+        """
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm reauth, then re-run the OAuth authorize flow."""
+        if user_input is None:
+            return self.async_show_form(step_id="reauth_confirm")
+        # async_step_user lazily (re)registers the PKCE impl before delegating.
+        return await self.async_step_user()
+
     async def async_oauth_create_entry(
         self, data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """Handle OAuth2 completion and proceed to workspace selection."""
+        """Handle OAuth2 completion.
+
+        Normal flow: continue to workspace -> product -> instance selection.
+        Reauth flow: only the token changed, so update the existing entry's data
+        in place (preserving workspace/instance/tunnel keys) and reload.
+        """
         _LOGGER.debug(
-            "async_oauth_create_entry called; data keys: %s, "
+            "async_oauth_create_entry called; source: %s, data keys: %s, "
             "token keys: %s, token_type: %s, expires_in: %s",
+            self.source,
             list(data.keys()),
             list(data["token"].keys()) if "token" in data else "<no token>",
             data.get("token", {}).get("token_type"),
             data.get("token", {}).get("expires_in"),
         )
+        if self.source == SOURCE_REAUTH:
+            _LOGGER.debug("Reauth complete; refreshing token on existing entry")
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(),
+                data_updates=data,
+            )
         self._oauth_data = data
         return await self.async_step_select_workspace()
 
@@ -136,7 +176,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                     self._selected_workspace_id = ws["id"]
                     self._selected_workspace_name = ws["name"]
                     break
-            return await self.async_step_select_home()
+            return await self.async_step_select_product()
 
         # Fetch workspaces from API
         _LOGGER.debug("Fetching workspaces from API")
@@ -176,7 +216,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if len(self._workspaces) == 1:
             self._selected_workspace_id = self._workspaces[0]["id"]
             self._selected_workspace_name = self._workspaces[0]["name"]
-            return await self.async_step_select_home()
+            return await self.async_step_select_product()
 
         workspace_options = {
             str(ws["id"]): ws["name"] for ws in self._workspaces
@@ -187,6 +227,32 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 {vol.Required("workspace"): vol.In(workspace_options)}
             ),
             errors=errors,
+        )
+
+    async def async_step_select_product(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle product-type selection (Smart Home or Security Access)."""
+        if user_input is not None and "product" in user_input:
+            product = user_input["product"]
+            _LOGGER.debug("User selected product: %s", product)
+            if product == PRODUCT_SECURITY_ACCESS:
+                return await self.async_step_select_access()
+            return await self.async_step_select_home()
+
+        product_options = {
+            PRODUCT_SMART_HOME: "Smart Home",
+            PRODUCT_SECURITY_ACCESS: "Security Access",
+        }
+        return self.async_show_form(
+            step_id="select_product",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "product", default=PRODUCT_SMART_HOME
+                    ): vol.In(product_options)
+                }
+            ),
         )
 
     async def async_step_select_home(
@@ -201,8 +267,9 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             for home in self._homes:
                 if str(home["id"]) == selected:
                     return await self._async_create_entry(
-                        home_id=home["id"],
-                        home_name=home["name"],
+                        product_type=PRODUCT_SMART_HOME,
+                        instance_id=home["id"],
+                        instance_name=home["name"],
                     )
             errors["base"] = ERR_CANNOT_CONNECT
 
@@ -240,8 +307,9 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         # Auto-skip if only one home
         if len(self._homes) == 1:
             return await self._async_create_entry(
-                home_id=self._homes[0]["id"],
-                home_name=self._homes[0]["name"],
+                product_type=PRODUCT_SMART_HOME,
+                instance_id=self._homes[0]["id"],
+                instance_name=self._homes[0]["name"],
             )
 
         home_options = {
@@ -255,19 +323,109 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _async_create_entry(
-        self, home_id: int, home_name: str
+    async def async_step_select_access(
+        self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Fetch tunnel token and create the config entry."""
-        _LOGGER.debug(
-            "Creating config entry for home_id=%s, home_name=%s", home_id, home_name
+        """Handle security access selection step (mirrors select_home)."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None and "access" in user_input:
+            selected = user_input["access"]
+            _LOGGER.debug("User selected access: %s", selected)
+            for access in self._accesses:
+                if str(access["id"]) == selected:
+                    return await self._async_create_entry(
+                        product_type=PRODUCT_SECURITY_ACCESS,
+                        instance_id=access["id"],
+                        instance_name=access["name"],
+                    )
+            errors["base"] = ERR_CANNOT_CONNECT
+
+        if not errors:
+            _LOGGER.debug(
+                "Fetching accesses for workspace_id=%s",
+                self._selected_workspace_id,
+            )
+            try:
+                path = API_PATH_SA_WORKSPACE_ACCESSES.format(
+                    workspace_id=self._selected_workspace_id
+                )
+                data = await self._async_api_request("GET", path)
+                self._accesses = data["accesses"]
+                _LOGGER.debug("Fetched %d access(es)", len(self._accesses))
+            except AuthenticationError:
+                _LOGGER.warning("Authentication failed while fetching accesses")
+                errors["base"] = ERR_INVALID_AUTH
+            except (ApiError, aiohttp.ClientError):
+                _LOGGER.exception("Failed to fetch accesses")
+                errors["base"] = ERR_CANNOT_CONNECT
+            except Exception:
+                _LOGGER.exception("Unexpected error fetching accesses")
+                errors["base"] = ERR_UNKNOWN
+
+        if errors:
+            return self.async_show_form(
+                step_id="select_access",
+                data_schema=vol.Schema({}),
+                errors=errors,
+            )
+
+        if not self._accesses:
+            return self.async_abort(reason=ERR_NO_ACCESSES)
+
+        # Auto-skip if only one access
+        if len(self._accesses) == 1:
+            return await self._async_create_entry(
+                product_type=PRODUCT_SECURITY_ACCESS,
+                instance_id=self._accesses[0]["id"],
+                instance_name=self._accesses[0]["name"],
+            )
+
+        access_options = {
+            str(access["id"]): access["name"] for access in self._accesses
+        }
+        return self.async_show_form(
+            step_id="select_access",
+            data_schema=vol.Schema(
+                {vol.Required("access"): vol.In(access_options)}
+            ),
+            errors=errors,
         )
-        await self.async_set_unique_id(str(home_id))
+
+    async def _async_create_entry(
+        self,
+        *,
+        product_type: str,
+        instance_id: int,
+        instance_name: str,
+    ) -> ConfigFlowResult:
+        """Fetch tunnel token and create the config entry for either product.
+
+        Smart Home and Security Access share the same shape (one entry per
+        instance). They differ only in the tunnel-token endpoint and whether a
+        subdomain is returned (Security Access has none).
+        """
+        is_sa = product_type == PRODUCT_SECURITY_ACCESS
+        # Namespace the SA unique_id so an access and a home with the same numeric
+        # id never collide. Smart home keeps its plain id for backward compat.
+        unique_id = f"sa_{instance_id}" if is_sa else str(instance_id)
+        error_step = "select_access" if is_sa else "select_home"
+
+        _LOGGER.debug(
+            "Creating config entry: product=%s, instance_id=%s, name=%s",
+            product_type,
+            instance_id,
+            instance_name,
+        )
+        await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
 
-        _LOGGER.debug("Fetching tunnel token for home_id=%s", home_id)
+        _LOGGER.debug("Fetching tunnel token for %s %s", product_type, instance_id)
         try:
-            path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=home_id)
+            if is_sa:
+                path = API_PATH_SA_ACCESS_TUNNEL_TOKEN.format(access_id=instance_id)
+            else:
+                path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=instance_id)
             tunnel_data = await self._async_api_request("GET", path)
             _LOGGER.debug(
                 "Tunnel token fetched; tunnel_id=%s, subdomain=%s",
@@ -277,35 +435,38 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         except AuthenticationError:
             _LOGGER.warning("Authentication failed while fetching tunnel token")
             return self.async_show_form(
-                step_id="select_home",
+                step_id=error_step,
                 data_schema=vol.Schema({}),
                 errors={"base": ERR_INVALID_AUTH},
             )
         except (ApiError, aiohttp.ClientError):
             _LOGGER.exception("Failed to fetch tunnel token")
             return self.async_show_form(
-                step_id="select_home",
+                step_id=error_step,
                 data_schema=vol.Schema({}),
                 errors={"base": ERR_CANNOT_CONNECT},
             )
         except Exception:
             _LOGGER.exception("Unexpected error fetching tunnel token")
             return self.async_show_form(
-                step_id="select_home",
+                step_id=error_step,
                 data_schema=vol.Schema({}),
                 errors={"base": ERR_UNKNOWN},
             )
 
-        return self.async_create_entry(
-            title=home_name,
-            data={
-                **self._oauth_data,
-                CONF_WORKSPACE_ID: self._selected_workspace_id,
-                CONF_WORKSPACE_NAME: self._selected_workspace_name,
-                CONF_HOME_ID: home_id,
-                CONF_HOME_NAME: home_name,
-                CONF_TUNNEL_TOKEN: tunnel_data["tunnel_token"],
-                CONF_TUNNEL_ID: tunnel_data["tunnel_id"],
-                CONF_SUBDOMAIN: tunnel_data["subdomain"],
-            },
-        )
+        data: dict[str, Any] = {
+            **self._oauth_data,
+            CONF_WORKSPACE_ID: self._selected_workspace_id,
+            CONF_WORKSPACE_NAME: self._selected_workspace_name,
+            CONF_PRODUCT_TYPE: product_type,
+            CONF_HOME_ID: instance_id,
+            CONF_HOME_NAME: instance_name,
+            CONF_TUNNEL_TOKEN: tunnel_data["tunnel_token"],
+            CONF_TUNNEL_ID: tunnel_data["tunnel_id"],
+        }
+        # Security Access tunnel-token carries no subdomain; the hostname(s) are
+        # derived live from the access routes by the coordinator.
+        if not is_sa:
+            data[CONF_SUBDOMAIN] = tunnel_data["subdomain"]
+
+        return self.async_create_entry(title=instance_name, data=data)

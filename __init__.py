@@ -30,12 +30,15 @@ from .const import (
     API_BASE_URL,
     CONF_HOME_ID,
     CONF_HOME_NAME,
+    CONF_PRODUCT_TYPE,
     CONF_SUBDOMAIN,
     CONF_TUNNEL_ID,
     CONF_TUNNEL_TOKEN,
     CONF_WORKSPACE_ID,
     DOMAIN,
     PLATFORMS,
+    PRODUCT_SECURITY_ACCESS,
+    PRODUCT_SMART_HOME,
     SERVICE_GET_STATUS,
     SERVICE_START_TUNNEL,
     SERVICE_STOP_TUNNEL,
@@ -48,7 +51,12 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SERVICE_SCHEMA = vol.Schema(
-    {vol.Required("home_id"): vol.Coerce(str)}
+    {
+        vol.Required("home_id"): vol.Coerce(str),
+        vol.Optional("product_type"): vol.In(
+            [PRODUCT_SMART_HOME, PRODUCT_SECURITY_ACCESS]
+        ),
+    }
 )
 
 type WoowConfigEntry = ConfigEntry[WoowRuntimeData]
@@ -65,15 +73,46 @@ class WoowRuntimeData:
 
 
 def _find_entry_and_data(
-    hass: HomeAssistant, home_id: str
-) -> tuple[WoowConfigEntry, WoowRuntimeData] | None:
-    """Find the loaded config entry and runtime data that match a given home_id."""
+    hass: HomeAssistant, home_id: str, product_type: str | None = None
+) -> tuple[WoowConfigEntry, WoowRuntimeData]:
+    """Find the loaded config entry and runtime data for a given instance id.
+
+    ``home_id`` is the instance id (smart home id or security access id); it is
+    stored under CONF_HOME_ID for both products. A smart home and a security
+    access can carry the same numeric id (independent backend id sequences), so
+    ``product_type`` disambiguates. Without it, an ambiguous match raises rather
+    than silently operating on the wrong product (fail loudly).
+
+    Raises:
+        HomeAssistantError: if no loaded entry matches, or the match is ambiguous.
+
+    """
+    matches: list[tuple[WoowConfigEntry, WoowRuntimeData]] = []
     for entry in hass.config_entries.async_entries(DOMAIN):
-        if str(entry.data.get(CONF_HOME_ID)) == str(home_id):
-            runtime_data = getattr(entry, "runtime_data", None)
-            if runtime_data is not None:
-                return entry, runtime_data
-    return None
+        if str(entry.data.get(CONF_HOME_ID)) != str(home_id):
+            continue
+        entry_product = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_SMART_HOME)
+        if product_type is not None and entry_product != product_type:
+            continue
+        runtime_data = getattr(entry, "runtime_data", None)
+        if runtime_data is not None:
+            matches.append((entry, runtime_data))
+
+    if not matches:
+        suffix = f", product_type={product_type}" if product_type else ""
+        raise HomeAssistantError(
+            f"No loaded config entry found for home_id={home_id}{suffix}"
+        )
+    if len(matches) > 1:
+        products = ", ".join(
+            entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_SMART_HOME)
+            for entry, _ in matches
+        )
+        raise HomeAssistantError(
+            f"Ambiguous home_id={home_id}: matches multiple products "
+            f"({products}). Pass product_type to disambiguate."
+        )
+    return matches[0]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -85,12 +124,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def _handle_start_tunnel(call: ServiceCall) -> None:
         """Handle start_tunnel service call."""
         home_id = call.data["home_id"]
-        result = _find_entry_and_data(hass, home_id)
-        if result is None:
-            raise HomeAssistantError(
-                f"No config entry found for home_id={home_id}"
-            )
-        entry, runtime_data = result
+        entry, runtime_data = _find_entry_and_data(
+            hass, home_id, call.data.get("product_type")
+        )
 
         tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
         if not tunnel_token:
@@ -108,12 +144,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def _handle_stop_tunnel(call: ServiceCall) -> None:
         """Handle stop_tunnel service call."""
         home_id = call.data["home_id"]
-        result = _find_entry_and_data(hass, home_id)
-        if result is None:
-            raise HomeAssistantError(
-                f"No config entry found for home_id={home_id}"
-            )
-        _, runtime_data = result
+        _, runtime_data = _find_entry_and_data(
+            hass, home_id, call.data.get("product_type")
+        )
 
         if not await runtime_data.tunnel_manager.stop_tunnel():
             raise HomeAssistantError("Failed to stop cloudflared tunnel")
@@ -121,15 +154,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def _handle_get_status(call: ServiceCall) -> ServiceResponse:
         """Handle get_status service call."""
         home_id = call.data["home_id"]
-        result = _find_entry_and_data(hass, home_id)
-        if result is None:
-            raise HomeAssistantError(
-                f"No config entry found for home_id={home_id}"
-            )
-        entry, runtime_data = result
+        entry, runtime_data = _find_entry_and_data(
+            hass, home_id, call.data.get("product_type")
+        )
 
         coord_data = runtime_data.coordinator.data
         return {
+            "product_type": entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_SMART_HOME),
             "tunnel_running": runtime_data.tunnel_manager.is_running,
             "tunnel_status": coord_data.status if coord_data else "unknown",
             "tunnel_connected": coord_data.is_connected if coord_data else False,
@@ -169,18 +200,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
     api_client = WoowPaasApiClient(session, API_BASE_URL)
     tunnel_manager = CloudflaredManager(hass)
 
+    product_type: str = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_SMART_HOME)
+    is_sa = product_type == PRODUCT_SECURITY_ACCESS
+    instance_id: int = entry.data[CONF_HOME_ID]
+
     # Re-fetch tunnel token on startup to ensure freshness
-    home_id: int = entry.data[CONF_HOME_ID]
     try:
-        token_data = await api_client.get_tunnel_token(home_id)
-        new_data = {
-            **entry.data,
-            CONF_TUNNEL_TOKEN: token_data["tunnel_token"],
-            CONF_TUNNEL_ID: token_data["tunnel_id"],
-            CONF_SUBDOMAIN: token_data["subdomain"],
-        }
+        if is_sa:
+            token_data = await api_client.get_access_tunnel_token(instance_id)
+            new_data = {
+                **entry.data,
+                CONF_TUNNEL_TOKEN: token_data["tunnel_token"],
+                CONF_TUNNEL_ID: token_data["tunnel_id"],
+            }
+        else:
+            token_data = await api_client.get_tunnel_token(instance_id)
+            new_data = {
+                **entry.data,
+                CONF_TUNNEL_TOKEN: token_data["tunnel_token"],
+                CONF_TUNNEL_ID: token_data["tunnel_id"],
+                CONF_SUBDOMAIN: token_data["subdomain"],
+            }
         hass.config_entries.async_update_entry(entry, data=new_data)
-        _LOGGER.debug("Refreshed tunnel token for home %s", home_id)
+        _LOGGER.debug("Refreshed tunnel token for %s %s", product_type, instance_id)
     except AuthenticationError as err:
         raise ConfigEntryAuthFailed(
             "Authentication failed during tunnel token refresh"
@@ -196,9 +238,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
         hass,
         api_client=api_client,
         tunnel_manager=tunnel_manager,
-        home_id=home_id,
+        instance_id=instance_id,
         subdomain=entry.data.get(CONF_SUBDOMAIN, ""),
         config_entry=entry,
+        product_type=product_type,
     )
     await coordinator.async_config_entry_first_refresh()
 
@@ -220,14 +263,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
             tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
             if not tunnel_token:
                 _LOGGER.error(
-                    "No tunnel token available for home %s; tunnel will not start",
-                    home_id,
+                    "No tunnel token available for %s %s; tunnel will not start",
+                    product_type,
+                    instance_id,
                 )
                 return
             if not await tunnel_manager.start_tunnel(tunnel_token):
                 _LOGGER.error(
-                    "Failed to start cloudflared tunnel for home %s in background",
-                    home_id,
+                    "Failed to start cloudflared tunnel for %s %s in background",
+                    product_type,
+                    instance_id,
                 )
         except asyncio.CancelledError:
             raise

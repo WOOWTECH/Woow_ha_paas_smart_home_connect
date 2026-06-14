@@ -14,6 +14,11 @@ from .const import (
     API_PATH_HOME,
     API_PATH_HOME_STATUS,
     API_PATH_HOME_TUNNEL_TOKEN,
+    API_PATH_SA_ACCESS,
+    API_PATH_SA_ACCESS_STATUS,
+    API_PATH_SA_ACCESS_TUNNEL_TOKEN,
+    API_PATH_SA_WORKSPACE_ACCESSES,
+    API_PATH_SA_WORKSPACES,
     API_PATH_WORKSPACE_HOMES,
     API_PATH_WORKSPACES,
 )
@@ -138,3 +143,75 @@ class WoowPaasApiClient:
         path = API_PATH_HOME_STATUS.format(home_id=home_id)
         data = await self._request("GET", path)
         return data["home"]
+
+    # ------------------------------------------------------------------
+    # Security Access
+    #
+    # Mirrors the smart home endpoints under the /api/security-access/ prefix.
+    # Key differences (see sm-api-doc):
+    #   - the instance is an "access" (id = access id) instead of a "home"
+    #   - the tunnel-token response has NO subdomain; hostnames live on the
+    #     access detail routes[].hostname instead
+    #   - the access has both a tunnel_status and a higher-level `state`
+    #     (pending/provisioning/active/active_no_route/error/suspended/deleting)
+    # ------------------------------------------------------------------
+
+    async def get_sa_workspaces(self) -> list[dict[str, Any]]:
+        """Fetch all workspaces for the authenticated user (Security Access view).
+
+        Product-agnostic: returns the same set as get_workspaces(). Provided for
+        symmetry; the config flow uses get_workspaces() for the shared step.
+
+        Returns:
+            List of workspace dicts with keys: id, name, slug.
+
+        """
+        data = await self._request("GET", API_PATH_SA_WORKSPACES)
+        return data["workspaces"]
+
+    async def get_accesses(self, workspace_id: int) -> list[dict[str, Any]]:
+        """Fetch all security accesses in a workspace.
+
+        Returns:
+            List of access dicts with keys: id, name, canonical_name, state,
+            tunnel_status, plan_name, next_payment.
+
+        """
+        path = API_PATH_SA_WORKSPACE_ACCESSES.format(workspace_id=workspace_id)
+        data = await self._request("GET", path)
+        return data["accesses"]
+
+    async def get_access(self, access_id: int) -> dict[str, Any]:
+        """Fetch full details for a single security access.
+
+        Returns:
+            Access dict with full to_dict() output (includes routes[]).
+
+        """
+        path = API_PATH_SA_ACCESS.format(access_id=access_id)
+        data = await self._request("GET", path)
+        return data["access"]
+
+    async def get_access_tunnel_token(self, access_id: int) -> dict[str, Any]:
+        """Fetch a Cloudflare tunnel token for a security access.
+
+        Returns:
+            Dict with keys: tunnel_token, tunnel_id (NO subdomain).
+
+        """
+        path = API_PATH_SA_ACCESS_TUNNEL_TOKEN.format(access_id=access_id)
+        data = await self._request("GET", path)
+        _LOGGER.debug("Fetched tunnel token for access %s", access_id)
+        return data
+
+    async def get_access_status(self, access_id: int) -> dict[str, Any]:
+        """Fetch updated status for a security access.
+
+        Returns:
+            Access dict (full to_dict()) with refreshed state, tunnel_status,
+            and routes[].
+
+        """
+        path = API_PATH_SA_ACCESS_STATUS.format(access_id=access_id)
+        data = await self._request("GET", path)
+        return data["access"]

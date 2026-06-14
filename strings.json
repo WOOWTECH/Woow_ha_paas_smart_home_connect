@@ -6,9 +6,16 @@
       },
       "select_workspace": {
         "title": "Select Workspace",
-        "description": "Choose the workspace that contains your smart home.",
+        "description": "Choose the workspace that contains your smart home or security access.",
         "data": {
           "workspace": "Workspace"
+        }
+      },
+      "select_product": {
+        "title": "Select Product",
+        "description": "Choose the product type to connect with this Home Assistant instance.",
+        "data": {
+          "product": "Product"
         }
       },
       "select_home": {
@@ -17,6 +24,17 @@
         "data": {
           "home": "Smart Home"
         }
+      },
+      "select_access": {
+        "title": "Select Security Access",
+        "description": "Choose the security access to connect with this Home Assistant instance.",
+        "data": {
+          "access": "Security Access"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Your Woow PaaS authorization has expired or is missing required permissions. Select Submit to re-authorize."
       }
     },
     "create_entry": {
@@ -25,13 +43,14 @@
     "error": {
       "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
       "invalid_auth": "Invalid authentication. Please re-authorize.",
-      "no_workspaces": "No workspaces found for your account.",
-      "no_homes": "No smart homes found in the selected workspace.",
       "unknown": "An unexpected error occurred."
     },
     "abort": {
-      "already_configured": "This smart home is already configured.",
-      "no_workspaces": "No workspaces found for your account. Please create a workspace first."
+      "already_configured": "This product instance is already configured.",
+      "no_workspaces": "No workspaces found for your account. Please create a workspace first.",
+      "no_homes": "No smart homes found in the selected workspace.",
+      "no_accesses": "No security accesses found in the selected workspace.",
+      "reauth_successful": "Re-authentication was successful."
     }
   },
   "entity": {

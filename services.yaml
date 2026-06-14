@@ -1,32 +1,59 @@
 start_tunnel:
   name: Start Tunnel
-  description: Start the Cloudflare Tunnel for a smart home.
+  description: Start the Cloudflare Tunnel for a smart home or security access.
   fields:
     home_id:
-      name: Home ID
-      description: The ID of the smart home to start the tunnel for.
+      name: Instance ID
+      description: The instance ID (smart home ID or security access ID) to start the tunnel for.
       required: true
       selector:
         text:
+    product_type:
+      name: Product Type
+      description: Disambiguate when a smart home and a security access share the same instance ID.
+      required: false
+      selector:
+        select:
+          options:
+            - smart_home
+            - security_access
 
 stop_tunnel:
   name: Stop Tunnel
-  description: Stop the Cloudflare Tunnel for a smart home.
+  description: Stop the Cloudflare Tunnel for a smart home or security access.
   fields:
     home_id:
-      name: Home ID
-      description: The ID of the smart home to stop the tunnel for.
+      name: Instance ID
+      description: The instance ID (smart home ID or security access ID) to stop the tunnel for.
       required: true
       selector:
         text:
+    product_type:
+      name: Product Type
+      description: Disambiguate when a smart home and a security access share the same instance ID.
+      required: false
+      selector:
+        select:
+          options:
+            - smart_home
+            - security_access
 
 get_status:
   name: Get Status
-  description: Get the current tunnel and smart home status.
+  description: Get the current tunnel and instance status.
   fields:
     home_id:
-      name: Home ID
-      description: The ID of the smart home to get the status for.
+      name: Instance ID
+      description: The instance ID (smart home ID or security access ID) to get the status for.
       required: true
       selector:
         text:
+    product_type:
+      name: Product Type
+      description: Disambiguate when a smart home and a security access share the same instance ID.
+      required: false
+      selector:
+        select:
+          options:
+            - smart_home
+            - security_access
