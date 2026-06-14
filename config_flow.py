@@ -212,12 +212,8 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not self._workspaces:
             return self.async_abort(reason=ERR_NO_WORKSPACES)
 
-        # Auto-skip if only one workspace
-        if len(self._workspaces) == 1:
-            self._selected_workspace_id = self._workspaces[0]["id"]
-            self._selected_workspace_name = self._workspaces[0]["name"]
-            return await self.async_step_select_product()
-
+        # Always show the list so the user explicitly confirms which workspace
+        # to use, even when only one exists.
         workspace_options = {
             str(ws["id"]): ws["name"] for ws in self._workspaces
         }
@@ -304,14 +300,8 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not self._homes:
             return self.async_abort(reason=ERR_NO_HOMES)
 
-        # Auto-skip if only one home
-        if len(self._homes) == 1:
-            return await self._async_create_entry(
-                product_type=PRODUCT_SMART_HOME,
-                instance_id=self._homes[0]["id"],
-                instance_name=self._homes[0]["name"],
-            )
-
+        # Always show the list so the user explicitly picks which smart home to
+        # create an entry for, even when only one exists.
         home_options = {
             str(home["id"]): home["name"] for home in self._homes
         }
@@ -373,14 +363,8 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not self._accesses:
             return self.async_abort(reason=ERR_NO_ACCESSES)
 
-        # Auto-skip if only one access
-        if len(self._accesses) == 1:
-            return await self._async_create_entry(
-                product_type=PRODUCT_SECURITY_ACCESS,
-                instance_id=self._accesses[0]["id"],
-                instance_name=self._accesses[0]["name"],
-            )
-
+        # Always show the list so the user explicitly picks which security
+        # access to create an entry for, even when only one exists.
         access_options = {
             str(access["id"]): access["name"] for access in self._accesses
         }
