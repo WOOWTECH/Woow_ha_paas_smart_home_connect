@@ -27,19 +27,39 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class RouteInfo:
+    """A single Security Access application route.
+
+    Keyed on ``route_id`` (the stable backend id from the API contract), so an
+    entity bound to it survives hostname/subdomain edits in the PaaS UI.
+    """
+
+    route_id: str
+    hostname: str
+    subdomain_prefix: str = ""
+    is_protected: bool = False
+    service_url: str = ""
+
+
+@dataclass(frozen=True)
 class TunnelStatusData:
     """Data from coordinator update."""
 
     status: TunnelStatus
-    subdomain_url: str  # https://{subdomain} (SH) or https://{route hostname} (SA), or ""
+    subdomain_url: str  # https://{subdomain} (SH) or https://{first route hostname} (SA), or ""
     # Security-access-only fields (None/empty for smart home).
     state: str | None = None  # SA access state, e.g. active / active_no_route
-    route_hostnames: tuple[str, ...] = ()  # all SA route hostnames
+    routes: tuple[RouteInfo, ...] = ()  # all SA routes (empty for smart home)
 
     @property
     def is_connected(self) -> bool:
         """Derive connectivity from status."""
         return self.status in (TunnelStatus.CONNECTED, TunnelStatus.UNKNOWN)
+
+    @property
+    def route_hostnames(self) -> tuple[str, ...]:
+        """All SA route hostnames (derived; kept for backward compatibility)."""
+        return tuple(route.hostname for route in self.routes)
 
 
 class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
@@ -77,19 +97,29 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         local_running = self._tunnel_manager.is_running
         is_sa = self._product_type == PRODUCT_SECURITY_ACCESS
 
-        # Attempt remote API call; use None as fallback on transient failure
+        # Attempt remote API call; use None as fallback on transient failure.
+        # Preserve the last-known SA state/routes so a transient API failure does
+        # not look like "the access lost all its routes" (which would flap every
+        # per-route entity to unavailable). Only a SUCCESSFUL poll overwrites them.
+        previous = self.data
         remote_status: str | None = None
-        state: str | None = None
-        route_hostnames: tuple[str, ...] = ()
+        state: str | None = previous.state if previous else None
+        routes: tuple[RouteInfo, ...] = previous.routes if previous else ()
         try:
             if is_sa:
                 data = await self._api_client.get_access_status(self._instance_id)
                 remote_status = (data.get("tunnel_status") or "").lower()
                 state = data.get("state")
-                route_hostnames = tuple(
-                    route["hostname"]
+                routes = tuple(
+                    RouteInfo(
+                        route_id=str(route["id"]),
+                        hostname=route["hostname"],
+                        subdomain_prefix=route.get("subdomain_prefix", ""),
+                        is_protected=bool(route.get("is_protected", False)),
+                        service_url=route.get("service_url", ""),
+                    )
                     for route in (data.get("routes") or [])
-                    if route.get("hostname")
+                    if route.get("hostname") and route.get("id") is not None
                 )
             else:
                 data = await self._api_client.get_home_status(self._instance_id)
@@ -100,7 +130,8 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             ) from err
         except (ApiError, aiohttp.ClientError):
             _LOGGER.warning(
-                "Failed to fetch remote status for %s %s, using fallback",
+                "Failed to fetch remote status for %s %s, using fallback "
+                "(keeping last-known routes)",
                 self._product_type,
                 self._instance_id,
             )
@@ -113,9 +144,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         # Build the display URL. Smart home uses its stored subdomain; security
         # access uses its first route hostname (empty when active_no_route / 0 routes).
         if is_sa:
-            subdomain_url = (
-                f"https://{route_hostnames[0]}" if route_hostnames else ""
-            )
+            subdomain_url = f"https://{routes[0].hostname}" if routes else ""
         else:
             subdomain_url = f"https://{self._subdomain}" if self._subdomain else ""
 
@@ -126,7 +155,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             status=status,
             subdomain_url=subdomain_url,
             state=state,
-            route_hostnames=route_hostnames,
+            routes=routes,
         )
 
     @staticmethod
