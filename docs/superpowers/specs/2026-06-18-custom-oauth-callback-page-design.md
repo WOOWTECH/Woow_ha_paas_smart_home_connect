@@ -3,7 +3,7 @@ name: custom-oauth-callback-page
 description: 以 component 自家 view 取代 my.home-assistant.io OAuth callback 跳轉頁（路線一）
 status: approved
 created: 2026-06-18T00:03:11Z
-updated: 2026-06-18T00:34:18Z
+updated: 2026-06-18T07:11:49Z
 ---
 
 # 自訂 OAuth Callback 跳轉頁設計（路線一）
@@ -98,7 +98,7 @@ class WoowOAuth2CallbackView(HomeAssistantView):
         # 2. _decode_jwt(state) is None → 400 品牌錯誤頁（不呼叫 flow）
         # 3. 有 code → user_input={state, code}；有 error → {state, error}；皆無 → 錯誤頁
         # 4. await async_configure(flow_id=state["flow_id"], user_input=...)
-        # 5. render WOOW 品牌成功/取消頁 + window.close()（含 fallback 文字）
+        # 5. render 方向 A 變體（成功/失敗，見 §4.5）：自包含 HTML + inline vanilla JS controller
 ```
 
 提供 idempotent 註冊輔助：
@@ -118,12 +118,64 @@ def async_register_woow_callback_view(hass) -> None:
 - `__init__.py async_setup`：亦呼叫一次（HA 重啟、既有 entry 已存在時就緒）。
 - 兩處皆 idempotent（`hass.data` flag）。
 
-### 4.5 品牌頁內容（決策：WOOW 品牌 + 自動關閉）
-- 成功：WOOW logo/色系 + 「驗證完成，正在返回 Home Assistant…」+ `window.close()`；
-  關閉被擋時顯示 fallback「可關閉此視窗並返回 Home Assistant」。
-- 取消（使用者拒絕）：品牌化「授權已取消」。
-- 錯誤（無效/竄改 state、缺參數）：品牌化錯誤頁（400）。
-- 頁面為獨立 HTML（不走 strings.json）。
+### 4.5 品牌頁內容 — 方向 A「忠於原版」
+
+設計來源：Eugene 提供的視覺方向探索（standalone HTML，含方向 A/B/C），定案
+**方向 A — 忠於原版**。視覺參考：`assets/callback-design-success.png`、
+`assets/callback-design-error.png`。
+
+**實作方式**：伺服器渲染的**自包含 HTML**（inline style 照搬 mockup 的設計 token，
+**不載 React、不依賴外部 CSS/字型 CDN**）；`pulseDot` keyframe inline；JetBrains Mono
+退化到 `ui-monospace, monospace`。清掉 mockup 的 React/styled-component 殘留
+（`data-dc-tpl`、`scp*`、`sc-interp`），改用語意化 markup。狀態由伺服器決定後渲染對應
+變體，再以 **vanilla JS** 接行為（不用 React）。
+
+**兩種狀態文案（逐字）**
+
+| 區塊 | 成功 | 失敗 |
+|---|---|---|
+| Badge | 「已授權」綠 | 「授權失敗」紅 |
+| 標題 | 已成功連結 Home Assistant | Home Assistant 連結失敗 |
+| 內文 | Woow 已完成 OAuth 授權，系統將自動帶你返回 Home Assistant 整合頁面。你也可以立即返回。 | 授權未完成或已逾時。請確認下方的 Home Assistant 網址後重新嘗試。 |
+| 狀態 pill | ✓ 正在返回整合頁面…（綠） | ✕ 授權遭拒或已逾時（紅） |
+| 主按鈕 | 立即返回整合頁 | 重新嘗試 |
+| 次按鈕 | （無） | 關閉視窗（原 mockup「返回 Woow 主控台」，依決策改） |
+
+**設計 token**
+- 卡片：`#FFF`，border `#E8EAEF`，radius `18px`，shadow `0 1px 2px rgba(17,24,39,.04),
+  0 4px 14px rgba(17,24,39,.035)`，width `460px`。
+- Header：height `188px`，漸層 `linear-gradient(135deg,#5B73FF 0%,#3D5AF1 60%,#2E45D6 100%)`，
+  點陣 `radial-gradient(rgba(255,255,255,.16) 1px, transparent 1px)` size `18px` opacity `.55`，
+  右上光暈 `radial-gradient(circle, rgba(255,255,255,.22), transparent 70%)`（top -50 right -40，200×200）。
+- Badge：成功 text `#157F43`/dot `#1FA055`；失敗 text `#CF3439`/dot `#E5484D`；底 `rgba(255,255,255,.94)`，pill。
+- Icon tile：64×64，radius `16`，`#FFF`，shadow `0 10px 28px rgba(20,22,40,.25)`；中間三顆 6×6 白點跑 `pulseDot`（1.4s，delay 0/.2/.4）。
+- 標題 `21px/800`，`#14161B`，letter-spacing `-.02em`；內文 `14.5px/1.6`，`#3C4150`。
+- 狀態 pill：成功 bg `#E7F6EC`/text `#157F43`；失敗 bg `#FDECEC`/text `#CF3439`。
+- 「HOME ASSISTANT 執行個體」label `11.5px/700` letter-spacing `.07em` `#8A909E`；上分隔線 `#EEF0F4`。
+  URL 文字 mono `#3B69EF` `14px`；編輯鈕 34×34 border `#E8EAEF` radius `10`；helper `12px #8A909E`「此網址僅儲存於你的瀏覽器。」。
+- 主按鈕：bg `#3D5AF1`，white `14px/700`，radius `10`，padding `11px 18px`，shadow `0 4px 12px rgba(61,90,241,.32)`。
+  次按鈕（失敗）：transparent，`#3C4150` `14px/600`，padding `11px 14px`。
+
+**SVG icon（stroke icon，viewBox 0 0 24 24）**
+- Cube（Woow，stroke `#3D5AF1` w2）：`M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z` ＋ `m3.3 7 8.7 5 8.7-5` ＋ `M12 22V12`
+- Home（HA，stroke `#18BCF2` w2）：`M3 10.5 12 3l9 7.5` ＋ `M5 9.5V21h14V9.5` ＋ `M9 21v-6h6v6`
+- Check（成功 pill，currentColor w2.4）：`M20 6 9 17l-5-5`
+- X（失敗 pill，currentColor w2.2）：`M18 6 6 18` ＋ `M6 6l12 12`
+- Pencil（編輯，currentColor w2）：`M12 20h9` ＋ `M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z`
+- keyframe：`@keyframes pulseDot{0%,100%{opacity:.3}50%{opacity:1}}`
+
+**行為（vanilla JS controller，三決策）**
+- **HA 執行個體 URL 欄（決策①：完全忠於原版）**：可編輯、`localStorage['woow_ha_url']`，
+  預設值 `window.location.origin`；編輯鈕→輸入→存 localStorage；helper「此網址僅儲存於你的瀏覽器。」。
+  此 URL 同時是下方倒數/立即返回的目標。
+- **成功返回（決策②：window.close() 優先 + fallback 倒數導回）**：載入即試 `window.close()`
+  （popup 情境→回 dialog 自動前進，同 HA 原生）。若約 1s 後仍開著（同分頁/被擋），顯示卡片與
+  5s 倒數「正在返回整合頁面…」，倒數結束 `location.href = {haUrl}/config/integrations/dashboard`；
+  「立即返回整合頁」＝立即 `window.close()`→fallback 同導回。
+- **失敗按鈕（決策③）**：「重新嘗試」＝`window.close()`→fallback 導回 integrations；
+  次鈕「關閉視窗」＝`window.close()`。
+
+頁面為獨立 HTML（不走 strings.json）。倒數預設 5s（同 mockup）。
 
 ### 4.6 HA Core 私有 helper 依賴
 `_decode_jwt` 為 HA Core 底線私有 helper（研究筆記點名的依賴風險）。以 CI 冒煙測試
@@ -195,11 +247,14 @@ paas 端變更（研究筆記點名 + agent 補充）：
   - **即使 `"my"` 在 `hass.config.components` 也不回 my-relay**。
 - `tests/test_oauth_callback_view.py`
   - success：valid state → `async_configure` 被以 `{state, code}` 呼叫 → 200 HTML
-    含 WOOW 品牌 + `window.close`。
-  - 無效/竄改 state → 400 品牌錯誤頁，`async_configure` **未**被呼叫。
-  - 缺 state、缺 code&error → 錯誤頁。
-  - error 參數（拒絕）→ `async_configure` 被以 `{state, error}` 呼叫 → 取消頁。
+    含方向 A 成功文案（「已成功連結 Home Assistant」）+ `window.close`。
+  - 無效/竄改 state → 400，HTML 含方向 A 失敗文案（「Home Assistant 連結失敗」），
+    `async_configure` **未**被呼叫。
+  - 缺 state、缺 code&error → 400 失敗頁。
+  - error 參數（拒絕）→ `async_configure` 被以 `{state, error}` 呼叫 → 200 失敗頁。
   - view 註冊 idempotent（呼叫兩次不重複註冊/不報錯）。
+  - 註：倒數/`window.close`/URL 編輯+localStorage 等 client-side JS 行為以 E2E（§8）驗證，
+    非 pytest 單元範圍；單元只驗伺服器渲染的變體與文案/狀態碼。
 - `tests/test_init.py`（或擴充既有）
   - `async_step_user` / `async_setup` 後 callback view 已註冊。
 - CI 冒煙測試
@@ -212,11 +267,12 @@ paas 端變更（研究筆記點名 + agent 補充）：
 前提：paas-platform 將放寬發版到 stg（deploy 次序 a→d）。
 
 1. 開 `http://localhost:8123/config/integrations/dashboard`，新增 "Woow PaaS Smart Home"。
-2. 要求登入 paas（admin/admin）。
-3. 選 test1 workspace → 一個 security access。
-4. **驗證按「允許」後落在 WOOW 品牌的 `/auth/external/woow/callback`
-   （非 my.home-assistant.io）、自動關閉、entry 建立成功。**
-5. HA 登入 eugene/12341234；以 chrome-devtools / playwright-cli 自動化。
+2. 登入 paas（admin/admin）→ 同意頁按「允許」。
+3. **驗證 callback：落在 `/auth/external/woow/callback`（非 my.home-assistant.io），
+   顯示方向 A 成功卡片（「已成功連結 Home Assistant」），`window.close()` 後回到 HA dialog。**
+4. dialog 自動前進 → 選 test1 workspace → 選一個 security access → entry 建立成功。
+5. （可選）模擬失敗：竄改 state / 拒絕授權 → 驗證方向 A 失敗卡片（「Home Assistant 連結失敗」）。
+6. HA 登入 eugene/12341234；以 chrome-devtools / playwright-cli 自動化。
 
 ## 9. 邊界與風險
 
@@ -226,7 +282,7 @@ paas 端變更（研究筆記點名 + agent 補充）：
 | 無效/竄改 state | `_decode_jwt` None → 400 品牌錯誤頁，不呼叫 flow |
 | 缺 state / 缺 code&error | 品牌錯誤頁 |
 | 無 `HA-Frontend-Base`（非 UI 流程） | `redirect_uri` raise（同 HA Core non-my 分支）；UI 流程必有此 header |
-| `window.close()` 被擋 | 顯示 fallback 文字 |
+| `window.close()` 被擋（同分頁） | 顯示方向 A 卡片 + 5s 倒數後導回 `{haUrl}/config/integrations/dashboard`（見 §4.5） |
 | 瀏覽器連不到本機 HA（遠端 onboarding） | 與 my-relay 同限制，文件註明 |
 | HA Core 升版改 `_decode_jwt` | CI 冒煙測試 fail loudly |
 | 跨 repo lock-step（#4 移除舊值） | prod 需同步發版；stg 兩端皆我方掌控 |
