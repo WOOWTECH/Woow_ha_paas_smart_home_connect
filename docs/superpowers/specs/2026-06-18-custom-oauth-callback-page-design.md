@@ -3,7 +3,7 @@ name: custom-oauth-callback-page
 description: 以 component 自家 view 取代 my.home-assistant.io OAuth callback 跳轉頁（路線一）
 status: approved
 created: 2026-06-18T00:03:11Z
-updated: 2026-06-18T00:03:11Z
+updated: 2026-06-18T00:34:18Z
 ---
 
 # 自訂 OAuth Callback 跳轉頁設計（路線一）
@@ -154,8 +154,26 @@ paas 端變更（研究筆記點名 + agent 補充）：
 5. `docs/reference/api/ha-component-integration.md`（約 :50）「redirect_uri 精確比對」字樣
    同步更新成放寬契約。
 
+**跨 repo 契約常數（lock-step，兩端逐字一致，改值屬 breaking）**：
+- `client_id = woow-ha-smart-home`（雙方都別動）
+- `path = /auth/external/woow/callback`：paas 側 `OAuthClient.HA_CALLBACK_PATH`、
+  component 側 `const.py:WOOW_AUTH_CALLBACK_PATH`，值必須逐字一致。
+
 **lock-step 註記**：因 #4 移除舊值，prod 切換需 component/paas 同步發版；stg E2E
 兩端皆我方掌控、component 直接出新 callback，故 stg 上移除舊值無虞。
+
+**發版次序（與 paas 確認 a→d）**：
+1. 兩邊 spec 定稿（paas 已 ready）
+2. paas 開 PR 實作 → merge develop
+3. paas `deploy-stg` 起帶放寬的 stg
+4. component 指向該 stg 接 E2E
+
+**發版前待結問題（不擋 spec 定稿，發版前再結）**：
+1. prod 是否已有真實 HA 使用者綁 my.home-assistant.io？決定 prod 發版窗口。
+   補充：`refresh_token` 不帶 `redirect_uri`，既有 token 續期不受影響；只有「重新授權」
+   會受 #4 移除舊值影響，影響面有限。
+2. 是否有使用者在私有網段用「自訂網域（非 .local）」？現規則「公網 host 一律 https」
+   會要求這類使用者用 https；若此情境存在，引導其改用 IP 或 .local。
 
 ## 6. 安全設計（open-redirect 收斂）
 
