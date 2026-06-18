@@ -45,6 +45,7 @@ from .const import (
 )
 from .coordinator import TunnelCoordinator
 from .oauth2 import create_implementation
+from .oauth_callback_view import async_register_woow_callback_view
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     config_entry_oauth2_flow.async_register_implementation(
         hass, DOMAIN, create_implementation(hass)
     )
+    async_register_woow_callback_view(hass)
 
     async def _handle_start_tunnel(call: ServiceCall) -> None:
         """Handle start_tunnel service call."""
