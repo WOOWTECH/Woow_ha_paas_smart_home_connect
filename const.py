@@ -96,3 +96,11 @@ SERVICE_GET_STATUS = "get_status"
 
 # --- Coordinator ---
 UPDATE_INTERVAL = 30  # seconds
+
+# --- Custom OAuth2 callback (replaces my.home-assistant.io relay) ---
+# Cross-repo contract constant: paas side OAuthClient.HA_CALLBACK_PATH must match
+# this value byte-for-byte. Changing it is a cross-repo breaking change.
+WOOW_AUTH_CALLBACK_PATH = "/auth/external/woow/callback"
+
+# hass.data flag guarding idempotent callback-view registration.
+DATA_CALLBACK_VIEW_REGISTERED = "woow_paas_smart_home_callback_view_registered"
