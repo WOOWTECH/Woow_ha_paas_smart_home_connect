@@ -134,3 +134,21 @@ def test_rendered_page_carries_direction_a_design_tokens() -> None:
     # 狀態文案分流
     assert "正在返回整合頁面" in success and "立即返回整合頁" in success
     assert "授權遭拒或已逾時" in error and "關閉視窗" in error
+
+
+def test_render_page_auto_return_mode_toggle() -> None:
+    """instant/linger 切換注入為 JS 全域 WOOW_INSTANT / WOOW_LINGER。"""
+    from custom_components.woow_paas_smart_home.oauth_callback_view import _render_page
+
+    # 預設（const = linger, 3s）：不在載入即關，倒數可見。
+    default = _render_page("success")
+    assert "var WOOW_INSTANT=false;" in default
+    assert "var WOOW_LINGER=3;" in default
+
+    # instant override：載入即 window.close()。
+    instant = _render_page("success", instant=True)
+    assert "var WOOW_INSTANT=true;" in instant
+
+    # 倒數秒數可調。
+    longer = _render_page("success", linger=5)
+    assert "var WOOW_LINGER=5;" in longer

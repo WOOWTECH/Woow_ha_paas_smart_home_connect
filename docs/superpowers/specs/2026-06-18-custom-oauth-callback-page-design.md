@@ -3,7 +3,7 @@ name: custom-oauth-callback-page
 description: 以 component 自家 view 取代 my.home-assistant.io OAuth callback 跳轉頁（路線一）
 status: approved
 created: 2026-06-18T00:03:11Z
-updated: 2026-06-18T07:11:49Z
+updated: 2026-06-18T14:31:57Z
 ---
 
 # 自訂 OAuth Callback 跳轉頁設計（路線一）
@@ -168,14 +168,18 @@ def async_register_woow_callback_view(hass) -> None:
 - **HA 執行個體 URL 欄（決策①：完全忠於原版）**：可編輯、`localStorage['woow_ha_url']`，
   預設值 `window.location.origin`；編輯鈕→輸入→存 localStorage；helper「此網址僅儲存於你的瀏覽器。」。
   此 URL 同時是下方倒數/立即返回的目標。
-- **成功返回（決策②：window.close() 優先 + fallback 倒數導回）**：載入即試 `window.close()`
-  （popup 情境→回 dialog 自動前進，同 HA 原生）。若約 1s 後仍開著（同分頁/被擋），顯示卡片與
-  5s 倒數「正在返回整合頁面…」，倒數結束 `location.href = {haUrl}/config/integrations/dashboard`；
-  「立即返回整合頁」＝立即 `window.close()`→fallback 同導回。
+- **成功返回（決策②：可切換 instant / linger）**：由 const `CALLBACK_AUTO_RETURN_MODE`
+  控制，`_render_page` 注入 JS 全域 `WOOW_INSTANT` / `WOOW_LINGER`（秒數 = `CALLBACK_LINGER_SECONDS`，預設 3）。
+  - `"instant"`：載入即 `window.close()`（popup 情境→秒回 dialog，最貼 HA 原生）；同分頁/被擋時，
+    倒數結束 `try window.close()` →`location.href = {haUrl}/config/integrations/dashboard`（fallback 畫面）。
+  - `"linger"`（**預設**）：不在載入即關，**先顯示方向 A 品牌頁 + 可見倒數「正在返回整合頁面…（N）」**，
+    倒數結束才 `window.close()`/導回 → 使用者一定看得到品牌頁；此倒數畫面與 instant 的 fallback 畫面相同。
+  - 「立即返回整合頁」＝立即 `clearInterval` + `window.close()`→fallback 導回（兩模式皆然）。
 - **失敗按鈕（決策③）**：「重新嘗試」＝`window.close()`→fallback 導回 integrations；
   次鈕「關閉視窗」＝`window.close()`。
 
-頁面為獨立 HTML（不走 strings.json）。倒數預設 5s（同 mockup）。
+頁面為獨立 HTML（不走 strings.json）。`CALLBACK_AUTO_RETURN_MODE` 切換需 HA 重啟才生效（模板於 import 時固化）。
+視覺參考：`assets/callback-linger-waiting.png`（linger/fallback 等待畫面）。
 
 ### 4.6 HA Core 私有 helper 依賴
 `_decode_jwt` 為 HA Core 底線私有 helper（研究筆記點名的依賴風險）。以 CI 冒煙測試

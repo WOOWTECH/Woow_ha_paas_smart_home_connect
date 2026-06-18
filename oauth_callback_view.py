@@ -15,7 +15,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import http
 from homeassistant.helpers.config_entry_oauth2_flow import _decode_jwt
 
-from .const import DATA_CALLBACK_VIEW_REGISTERED, WOOW_AUTH_CALLBACK_PATH
+from .const import (
+    CALLBACK_AUTO_RETURN_MODE,
+    CALLBACK_LINGER_SECONDS,
+    DATA_CALLBACK_VIEW_REGISTERED,
+    WOOW_AUTH_CALLBACK_PATH,
+)
 
 
 _SVG_CUBE = (
@@ -195,11 +200,14 @@ _SCRIPT = (
     "var primary=document.getElementById('woow-primary-btn');"
     "var secondary=document.getElementById('woow-secondary-btn');"
     "if(status==='success'){"
-    "try{window.close();}catch(e){}"
-    "var secs=5;var pill=document.getElementById('woow-pill-text');"
+    # WOOW_INSTANT/WOOW_LINGER 由 _render_page 注入（見 const CALLBACK_AUTO_RETURN_MODE）。
+    # instant：載入即 close；linger：先顯示品牌頁 + 倒數，再 close/導回（倒數畫面＝fallback 畫面）。
+    "if(WOOW_INSTANT){try{window.close();}catch(e){}}"
+    "var secs=WOOW_LINGER;var pill=document.getElementById('woow-pill-text');"
+    "if(pill){pill.textContent='正在返回整合頁面…（'+secs+'）';}"
     "var timer=setInterval(function(){secs-=1;"
     "if(pill){pill.textContent='正在返回整合頁面…（'+secs+'）';}"
-    "if(secs<=0){clearInterval(timer);returnToIntegrations();}},1000);"
+    "if(secs<=0){clearInterval(timer);try{window.close();}catch(e){}returnToIntegrations();}},1000);"
     "if(primary){primary.addEventListener('click',function(){clearInterval(timer);"
     "try{window.close();}catch(e){}returnToIntegrations();});}"
     "}else{"
@@ -211,8 +219,22 @@ _SCRIPT = (
 )
 
 
-def _render_page(status: str) -> str:
-    """Render the 方向 A branded page for `status` ('success' or 'error')."""
+def _render_page(
+    status: str,
+    *,
+    instant: bool | None = None,
+    linger: int | None = None,
+) -> str:
+    """Render the 方向 A branded page for `status` ('success' or 'error').
+
+    Auto-return behaviour is injected as JS globals WOOW_INSTANT / WOOW_LINGER.
+    Both default to the const CALLBACK_AUTO_RETURN_MODE / CALLBACK_LINGER_SECONDS;
+    pass them explicitly to override (e.g. in tests).
+    """
+    if instant is None:
+        instant = CALLBACK_AUTO_RETURN_MODE == "instant"
+    if linger is None:
+        linger = CALLBACK_LINGER_SECONDS
     variant = _VARIANTS["error" if status == "error" else "success"]
     body = _BODY_TEMPLATE.format(
         badge_text=variant["badge_text"],
@@ -229,13 +251,17 @@ def _render_page(status: str) -> str:
         x=_SVG_X,
     )
     safe_status = "error" if status == "error" else "success"
+    config_js = (
+        f"var WOOW_INSTANT={'true' if instant else 'false'};"
+        f"var WOOW_LINGER={int(linger)};"
+    )
     return (
         "<!DOCTYPE html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<title>Woow · OAuth 授權回調</title>"
         f"<style>{_STYLE}</style></head>"
         f"<body data-status=\"{safe_status}\">{body}"
-        f"<script>{_SCRIPT}</script></body></html>"
+        f"<script>{config_js}{_SCRIPT}</script></body></html>"
     )
 
 
