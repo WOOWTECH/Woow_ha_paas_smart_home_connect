@@ -152,3 +152,16 @@ def test_render_page_auto_return_mode_toggle() -> None:
     # 倒數秒數可調。
     longer = _render_page("success", linger=5)
     assert "var WOOW_LINGER=5;" in longer
+
+
+def test_edit_pauses_countdown_machinery_present() -> None:
+    """編輯網址時暫停倒數（避免自動返回打斷編輯）的機制有被渲染。"""
+    from custom_components.woow_paas_smart_home.oauth_callback_view import _render_page
+
+    success = _render_page("success")
+    # 倒數控制函式 + 編輯時的暫停提示
+    assert "startCountdown" in success and "stopCountdown" in success
+    assert "自動返回已暫停" in success
+    # 編輯鈕暫停、存檔/取消重新開始
+    assert "click',function(){stopCountdown();" in success
+    assert "viewRow.style.display='flex';startCountdown();" in success

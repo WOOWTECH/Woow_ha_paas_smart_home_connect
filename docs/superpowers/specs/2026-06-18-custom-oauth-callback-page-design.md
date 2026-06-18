@@ -3,7 +3,7 @@ name: custom-oauth-callback-page
 description: 以 component 自家 view 取代 my.home-assistant.io OAuth callback 跳轉頁（路線一）
 status: approved
 created: 2026-06-18T00:03:11Z
-updated: 2026-06-18T14:31:57Z
+updated: 2026-06-18T14:49:48Z
 ---
 
 # 自訂 OAuth Callback 跳轉頁設計（路線一）
@@ -168,6 +168,8 @@ def async_register_woow_callback_view(hass) -> None:
 - **HA 執行個體 URL 欄（決策①：完全忠於原版）**：可編輯、`localStorage['woow_ha_url']`，
   預設值 `window.location.origin`；編輯鈕→輸入→存 localStorage；helper「此網址僅儲存於你的瀏覽器。」。
   此 URL 同時是下方倒數/立即返回的目標。
+  進入編輯模式會 **`stopCountdown()` 暫停自動返回倒數**（pill 顯示「自動返回已暫停（編輯中）」），
+  避免倒數歸零時打斷編輯/導到舊網址；存檔或取消後 **`startCountdown()` 以完整秒數重新倒數**。
 - **成功返回（決策②：可切換 instant / linger）**：由 const `CALLBACK_AUTO_RETURN_MODE`
   控制，`_render_page` 注入 JS 全域 `WOOW_INSTANT` / `WOOW_LINGER`（秒數 = `CALLBACK_LINGER_SECONDS`，預設 3）。
   - `"instant"`：載入即 `window.close()`（popup 情境→秒回 dialog，最貼 HA 原生）；同分頁/被擋時，
