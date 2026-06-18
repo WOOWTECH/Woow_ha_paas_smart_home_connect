@@ -1,0 +1,221 @@
+---
+name: custom-oauth-callback-page
+description: 以 component 自家 view 取代 my.home-assistant.io OAuth callback 跳轉頁（路線一）
+status: approved
+created: 2026-06-18T00:03:11Z
+updated: 2026-06-18T00:03:11Z
+---
+
+# 自訂 OAuth Callback 跳轉頁設計（路線一）
+
+## 1. 目標與背景
+
+把 OAuth 同意頁按「允許」後出現的 callback 跳轉頁，從 HA 共用公開頁
+`https://my.home-assistant.io/redirect/oauth` 換成 **WOOW 自家、由 component 渲染、
+落在使用者本機 HA 的品牌頁**，達到「零第三方頁」。
+
+- 同意頁（`/oauth2/authorize`）已是 WOOW 自家樣式，不在本題範圍。
+- OAuth provider 就是 WOOW 自己，`redirect_uri` 接受什麼值由 WOOW 的 code 決定，
+  因此不被 my.home-assistant.io 綁死。
+- 可行性研究見 maestri 筆記 `research-custom-callback-page`（2026-06-17，judge-panel
+  結論：可行、但**絕不 fork HA Core**）。本設計採其推薦的**路線一**。
+
+## 2. 現況流程（已與 HA Core 原始碼交叉驗證）
+
+1. `WoowPaasOAuth2`（`oauth2.py`）繼承 `LocalOAuth2ImplementationWithPkce`，
+   `redirect_uri` 走 HA Core `async_get_redirect_uri()`；因 HA 預設載入 `my`
+   component，回傳寫死的 `MY_AUTH_CALLBACK_PATH`
+   （`homeassistant/helpers/config_entry_oauth2_flow.py:67-68`）。
+2. WOOW 同意頁按「允許」→ 302 帶 `code`+`state` 到 my-relay；`state` 是用
+   **本機 HA 密鑰簽章的 JWT**（`{flow_id, redirect_uri}`，`_encode_jwt`），
+   relay 看不懂、只負責 bounce 回本機 `/auth/external/callback`。
+3. 本機 `OAuth2AuthorizeCallbackView`
+   （`config_entry_oauth2_flow.py:603-644`）用 `_decode_jwt` 解出 `flow_id`
+   → `async_configure` 餵回 config flow → component 後端用 PKCE 換 token。
+   **token 全程不離本機。**
+
+## 3. 目標流程（路線一）
+
+```
+1. HA UI 新增整合 → config_flow.async_step_user
+     ├─ lazy 註冊 OAuth impl（既有）
+     └─ lazy 註冊 callback view（新增，idempotent）
+2. async_step_auth 產生 authorize URL
+     └─ redirect_uri = {HA-Frontend-Base}/auth/external/woow/callback   ← override，不走 my-relay
+3. 瀏覽器 → WOOW /oauth2/authorize（登入 + 同意頁，已 WOOW 樣式）
+4. 按「允許」→ 302 帶 code+state → {本機HA}/auth/external/woow/callback   ← 我們的 view
+5. WoowOAuth2CallbackView.get：
+     ├─ _decode_jwt(state)                         ── 重用 HA Core
+     ├─ async_configure(flow_id, {code/error, state}) ── 重用 HA Core
+     └─ render WOOW 品牌頁 + window.close()          ── 唯一新寫的「畫面」
+6. config flow 後端 PKCE POST /oauth2/token 換 token，寫本機。token 不離本機。
+```
+
+**核心**：零第三方頁；接 token 的邏輯 100% 重用 HA Core；新寫的只有 view 殼 +
+品牌頁 + `redirect_uri` override。
+
+## 4. Component 側設計（本 repo）
+
+各單元職責清楚、可獨立理解與測試（小而專注）。
+
+### 4.1 `const.py`
+新增跨 repo 契約常數：
+```python
+WOOW_AUTH_CALLBACK_PATH = "/auth/external/woow/callback"
+```
+
+### 4.2 `oauth2.py` — `WoowPaasOAuth2` override `redirect_uri`
+略過 HA Core 的 `"my"` 判斷，回傳本機 woow callback；鏡像
+`async_get_redirect_uri` 的 non-my 分支（3 行）：
+```python
+@property
+def redirect_uri(self) -> str:
+    """Return the WOOW-hosted callback on the local HA instance.
+
+    Bypasses HA Core's my.home-assistant.io relay so the OAuth callback
+    lands directly on a component-rendered, WOOW-branded page.
+    """
+    if (req := http.current_request.get()) is None:
+        raise RuntimeError("No current request in context")
+    if (ha_host := req.headers.get(HEADER_FRONTEND_BASE)) is None:
+        raise RuntimeError("No header in request")
+    return f"{ha_host}{WOOW_AUTH_CALLBACK_PATH}"
+```
+（`http` = `homeassistant.helpers.http`；`HEADER_FRONTEND_BASE` 由
+`config_entry_oauth2_flow` 匯入。）
+
+### 4.3 `oauth_callback_view.py`（新檔）— `WoowOAuth2CallbackView`
+`HomeAssistantView` 子類，`get()` 鏡像 `OAuth2AuthorizeCallbackView.get`，但 render
+WOOW 品牌頁。**重用** `_decode_jwt` + `async_configure`，差別只在 render：
+```python
+class WoowOAuth2CallbackView(HomeAssistantView):
+    requires_auth = False
+    url = WOOW_AUTH_CALLBACK_PATH
+    name = "woow_paas_smart_home:oauth_callback"
+
+    async def get(self, request):
+        # 1. 缺 state → 品牌錯誤頁
+        # 2. _decode_jwt(state) is None → 400 品牌錯誤頁（不呼叫 flow）
+        # 3. 有 code → user_input={state, code}；有 error → {state, error}；皆無 → 錯誤頁
+        # 4. await async_configure(flow_id=state["flow_id"], user_input=...)
+        # 5. render WOOW 品牌成功/取消頁 + window.close()（含 fallback 文字）
+```
+
+提供 idempotent 註冊輔助：
+```python
+def async_register_woow_callback_view(hass) -> None:
+    if hass.data.get(DATA_CALLBACK_VIEW_REGISTERED):
+        return
+    hass.http.register_view(WoowOAuth2CallbackView())
+    hass.data[DATA_CALLBACK_VIEW_REGISTERED] = True
+```
+
+### 4.4 註冊時機（關鍵）
+首次 UI 設定時 `async_setup` **不會**被呼叫（既有 `config_flow.async_step_user`
+即為此 lazy 註冊 impl）。callback view 必須在授權 302 回來前就存在，故：
+- `config_flow.async_step_user`：在 lazy 註冊 impl 旁，加 `async_register_woow_callback_view(hass)`
+  （涵蓋首次設定 + reauth，因 reauth 也走 `async_step_user`）。
+- `__init__.py async_setup`：亦呼叫一次（HA 重啟、既有 entry 已存在時就緒）。
+- 兩處皆 idempotent（`hass.data` flag）。
+
+### 4.5 品牌頁內容（決策：WOOW 品牌 + 自動關閉）
+- 成功：WOOW logo/色系 + 「驗證完成，正在返回 Home Assistant…」+ `window.close()`；
+  關閉被擋時顯示 fallback「可關閉此視窗並返回 Home Assistant」。
+- 取消（使用者拒絕）：品牌化「授權已取消」。
+- 錯誤（無效/竄改 state、缺參數）：品牌化錯誤頁（400）。
+- 頁面為獨立 HTML（不走 strings.json）。
+
+### 4.6 HA Core 私有 helper 依賴
+`_decode_jwt` 為 HA Core 底線私有 helper（研究筆記點名的依賴風險）。以 CI 冒煙測試
+鎖住（見 §7），HA 升版若改動 `_encode_jwt`/`_decode_jwt` 行為會 fail loudly。
+
+## 5. paas 側契約（跨 repo，由 maestri 驅動 paas-platform agent）
+
+已與 `paas-platform` agent 對齊（2026-06-18）。對方確認可行，開發量
+model+seed+healer+tests ≈ 0.5–1 天 + review。
+
+| # | 決策 | 定案 |
+|---|---|---|
+| 1 | path 常數 | `/auth/external/woow/callback`（跨 repo 契約常數，兩端對齊） |
+| 2 | scheme 尺度 | 公網 host 強制 https；http 僅限 loopback / 私有網段 / .local（RFC 8252 風格）。host 不限，只是 scheme 按 host 類別分 |
+| 3 | query/fragment | reject（callback view URL 乾淨無 query） |
+| 4 | 舊值去留 | **移除** my.home-assistant.io，只接受新 pattern（不走 superset） |
+| 5 | flag 形態 | 由 paas 拍板；我方傾向 Selection `redirect_uri_match_mode`，尊重其 `require_pkce` Boolean 先例 |
+
+paas 端變更（研究筆記點名 + agent 補充）：
+1. `src/models/oauth_client.py:144-147` `check_redirect_uri`：對 client_id
+   `woow-ha-smart-home` 由精確比對放寬成安全 pattern（path 鎖 `/auth/external/woow/callback`、
+   scheme 依 §5#2、reject query/fragment）。其他 client_id 維持 exact-match。
+2. token endpoint（`src/controllers/oauth2.py`）的 redirect_uri 驗證套用同一放寬。
+3. `src/data/oauth_clients.xml:15`：`woow-ha-smart-home` 的 redirect_uri seed 改為新 pattern 表示
+   （移除 my.home-assistant.io）。
+4. healer/migration：`oauth_clients.xml` 為 `noupdate=1`，既有 stg/prod DB 需 healer
+   （比照 `oauth_scope_updates.xml`）。manifest 走 healer 不需 bump（現 18.0.1.0.40）。
+5. `docs/reference/api/ha-component-integration.md`（約 :50）「redirect_uri 精確比對」字樣
+   同步更新成放寬契約。
+
+**lock-step 註記**：因 #4 移除舊值，prod 切換需 component/paas 同步發版；stg E2E
+兩端皆我方掌控、component 直接出新 callback，故 stg 上移除舊值無虞。
+
+## 6. 安全設計（open-redirect 收斂）
+
+- **PKCE 兜底**：被竊 code 無 `code_verifier`（僅合法 component 持有）→ 無法換 token。
+  這是放寬 host 的安全基礎。
+- **path + scheme 白名單**：open-redirect 面收斂到單一 path；公網強制 https。
+- **簽章 state JWT**（本機 HA 密鑰）：`_decode_jwt` 對竄改/他機 state 回 None →
+  render 錯誤頁、不呼叫 `async_configure`。等同重用 HA Core 的 CSRF/state 防護。
+- **放寬僅限 `woow-ha-smart-home`**：其他 client 不受影響。
+
+## 7. 測試策略（TDD）
+
+目的：未來測試保護、規格定義、連續整合、AI 自動測試。
+執行環境：HA devcontainer（ha-venv）內跑 hassfest/pytest，非 host；不安裝 PHCC。
+
+- `tests/test_oauth2.py`
+  - `redirect_uri` 帶 `HA-Frontend-Base` header → 回 `{base}/auth/external/woow/callback`。
+  - 無 header / 無 current_request → raise。
+  - **即使 `"my"` 在 `hass.config.components` 也不回 my-relay**。
+- `tests/test_oauth_callback_view.py`
+  - success：valid state → `async_configure` 被以 `{state, code}` 呼叫 → 200 HTML
+    含 WOOW 品牌 + `window.close`。
+  - 無效/竄改 state → 400 品牌錯誤頁，`async_configure` **未**被呼叫。
+  - 缺 state、缺 code&error → 錯誤頁。
+  - error 參數（拒絕）→ `async_configure` 被以 `{state, error}` 呼叫 → 取消頁。
+  - view 註冊 idempotent（呼叫兩次不重複註冊/不報錯）。
+- `tests/test_init.py`（或擴充既有）
+  - `async_step_user` / `async_setup` 後 callback view 已註冊。
+- CI 冒煙測試
+  - assert `_encode_jwt`/`_decode_jwt` round-trip 正常 → 鎖 HA 版本漂移。
+
+先寫測試（紅）→ 實作（綠）→ 重構，遵循 test-driven-development。
+
+## 8. E2E 驗證（需 paas 先發 stg）
+
+前提：paas-platform 將放寬發版到 stg（deploy 次序 a→d）。
+
+1. 開 `http://localhost:8123/config/integrations/dashboard`，新增 "Woow PaaS Smart Home"。
+2. 要求登入 paas（admin/admin）。
+3. 選 test1 workspace → 一個 security access。
+4. **驗證按「允許」後落在 WOOW 品牌的 `/auth/external/woow/callback`
+   （非 my.home-assistant.io）、自動關閉、entry 建立成功。**
+5. HA 登入 eugene/12341234；以 chrome-devtools / playwright-cli 自動化。
+
+## 9. 邊界與風險
+
+| 情境 | 行為 |
+|---|---|
+| 使用者拒絕授權 | `error` 參數 → `async_configure({error})` → flow abort `user_rejected_authorize`；品牌取消頁 |
+| 無效/竄改 state | `_decode_jwt` None → 400 品牌錯誤頁，不呼叫 flow |
+| 缺 state / 缺 code&error | 品牌錯誤頁 |
+| 無 `HA-Frontend-Base`（非 UI 流程） | `redirect_uri` raise（同 HA Core non-my 分支）；UI 流程必有此 header |
+| `window.close()` 被擋 | 顯示 fallback 文字 |
+| 瀏覽器連不到本機 HA（遠端 onboarding） | 與 my-relay 同限制，文件註明 |
+| HA Core 升版改 `_decode_jwt` | CI 冒煙測試 fail loudly |
+| 跨 repo lock-step（#4 移除舊值） | prod 需同步發版；stg 兩端皆我方掌控 |
+
+## 10. 不做（YAGNI）
+
+- 不 fork / 不複製 HA Core OAuth helper（只重用 `_decode_jwt`/`async_configure`）。
+- 不自架 WOOW relay 頁（路線二）。
+- 不為遠端 onboarding 另做 my-relay fallback（維持與 my-relay 相同的本機可達限制）。
+- component 不主動偵測可達性、不條件式切換 redirect_uri。
