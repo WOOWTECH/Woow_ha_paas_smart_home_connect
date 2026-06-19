@@ -96,3 +96,20 @@ SERVICE_GET_STATUS = "get_status"
 
 # --- Coordinator ---
 UPDATE_INTERVAL = 30  # seconds
+
+# --- Custom OAuth2 callback (replaces my.home-assistant.io relay) ---
+# Cross-repo contract constant: paas side OAuthClient.HA_CALLBACK_PATH must match
+# this value byte-for-byte. Changing it is a cross-repo breaking change.
+WOOW_AUTH_CALLBACK_PATH = "/auth/external/woow/callback"
+
+# hass.data flag guarding idempotent callback-view registration.
+DATA_CALLBACK_VIEW_REGISTERED = "woow_paas_smart_home_callback_view_registered"
+
+# Callback 成功頁的自動返回行為（見設計 §4.5 decision #2）：
+#   "linger"  — 先顯示方向 A 品牌頁 + 倒數 CALLBACK_LINGER_SECONDS 秒，再 window.close()/導回
+#               （使用者看得到品牌頁；倒數畫面即同分頁/被擋時的 fallback 畫面）
+#   "instant" — 載入即 window.close()（最貼 HA 原生、最快；popup 情境幾乎看不到，
+#               同分頁/被擋時仍以倒數畫面 fallback 後導回）
+CALLBACK_AUTO_RETURN_MODE = "linger"
+# 倒數秒數：linger 模式的可見停留時間，也是 instant 模式的 fallback 倒數時間。
+CALLBACK_LINGER_SECONDS = 3

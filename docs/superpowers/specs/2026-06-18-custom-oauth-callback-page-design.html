@@ -1,0 +1,746 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>自訂 OAuth Callback 跳轉頁設計（路線一）· woow_paas_smart_home</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============ Tokens ============ */
+:root{
+  --bg:#0F172A; --surface:#1E293B; --surface-2:#243349; --surface-3:#172033;
+  --border:rgba(148,163,184,.18); --border-strong:rgba(148,163,184,.32);
+  --text:#F1F5F9; --muted:#94A3B8; --faint:#64748B;
+  --primary:#3B82F6; --primary-2:#60A5FA; --cta:#2563EB;
+  --green:#34D399; --green-bg:rgba(52,211,153,.12);
+  --red:#F87171; --red-bg:rgba(248,113,113,.12);
+  --amber:#FBBF24; --amber-bg:rgba(251,191,36,.12);
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
+  --shadow:0 8px 30px rgba(0,0,0,.35); --radius:14px;
+}
+[data-theme="light"]{
+  --bg:#F8FAFC; --surface:#FFFFFF; --surface-2:#F1F5F9; --surface-3:#EEF2F7;
+  --border:#E2E8F0; --border-strong:#CBD5E1;
+  --text:#0F172A; --muted:#475569; --faint:#94A3B8;
+  --green:#059669; --green-bg:rgba(5,150,105,.10);
+  --red:#DC2626; --red-bg:rgba(220,38,38,.08);
+  --amber:#B45309; --amber-bg:rgba(180,83,9,.10);
+  --shadow:0 8px 24px rgba(15,23,42,.08);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:84px}
+body{
+  margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+  line-height:1.65;font-size:16px;-webkit-font-smoothing:antialiased;
+  transition:background .3s ease,color .3s ease;
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
+
+/* ============ Scroll progress ============ */
+#progress{position:fixed;top:0;left:0;height:3px;width:0;z-index:100;
+  background:linear-gradient(90deg,var(--primary),var(--primary-2));transition:width .1s linear}
+
+/* ============ Nav ============ */
+nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);
+  background:color-mix(in srgb,var(--bg) 82%,transparent);
+  border-bottom:1px solid var(--border)}
+.nav-inner{max-width:1140px;margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:18px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-weight:700;font-size:14px;white-space:nowrap}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--primary);box-shadow:0 0 12px var(--primary)}
+.nav-links{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;flex:1}
+.nav-links::-webkit-scrollbar{display:none}
+.nav-links a{font-family:var(--mono);font-size:12.5px;color:var(--muted);text-decoration:none;
+  padding:6px 11px;border-radius:8px;white-space:nowrap;transition:color .2s,background .2s;cursor:pointer}
+.nav-links a:hover{color:var(--text);background:var(--surface)}
+.nav-links a.active{color:var(--primary-2);background:var(--surface)}
+.toggle{flex-shrink:0;display:flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);
+  color:var(--muted);border-radius:8px;padding:7px 10px;cursor:pointer;font-family:var(--mono);font-size:12px;transition:.2s}
+.toggle:hover{color:var(--text);border-color:var(--border-strong)}
+.toggle svg{width:15px;height:15px}
+
+/* ============ Layout ============ */
+main{max-width:1140px;margin:0 auto;padding:0 24px}
+section{padding:56px 0;border-top:1px solid var(--border)}
+section:first-of-type{border-top:none}
+.sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:8px}
+.sec-num{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--primary);letter-spacing:.5px}
+.sec-head h2{font-family:var(--mono);font-size:clamp(20px,3vw,27px);font-weight:700;margin:0;letter-spacing:-.5px}
+.sec-sub{color:var(--muted);font-size:15px;margin:0 0 26px;max-width:75ch}
+
+/* ============ Hero ============ */
+.hero{position:relative;max-width:1140px;margin:0 auto;padding:64px 24px 30px;overflow:hidden}
+.hero::before{content:"";position:absolute;top:-160px;right:-80px;width:520px;height:420px;z-index:-1;
+  background:radial-gradient(circle at 60% 40%,rgba(59,130,246,.22),transparent 62%);filter:blur(8px)}
+.badge{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;font-weight:600;
+  color:var(--primary-2);background:var(--surface);border:1px solid var(--border-strong);
+  padding:6px 13px;border-radius:999px;margin-bottom:20px}
+.badge .pulse{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.hero h1{font-family:var(--mono);font-size:clamp(26px,4.4vw,42px);line-height:1.18;margin:0 0 16px;
+  font-weight:700;letter-spacing:-1px;max-width:20ch}
+.hero h1 .accent{background:linear-gradient(120deg,var(--primary),var(--primary-2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{font-size:18px;color:var(--muted);max-width:72ch;margin:0 0 22px}
+.lead b{color:var(--text);font-weight:600}
+.meta-chips{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:6px}
+.chip{font-family:var(--mono);font-size:12px;color:var(--muted);background:var(--surface);
+  border:1px solid var(--border);padding:6px 12px;border-radius:8px;display:inline-flex;gap:7px;align-items:center}
+.chip b{color:var(--text);font-weight:600}
+.chip a{color:var(--primary-2);text-decoration:none}
+.chip a:hover{text-decoration:underline}
+
+/* ============ KPI ============ */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:34px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;
+  position:relative;overflow:hidden;transition:border-color .2s,transform .2s}
+.kpi:hover{border-color:var(--border-strong);transform:translateY(-2px)}
+.kpi::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--primary)}
+.kpi .v{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1;letter-spacing:-1px}
+.kpi .v small{font-size:15px;color:var(--muted);font-weight:500}
+.kpi .l{color:var(--muted);font-size:13px;margin-top:8px}
+.kpi.good::after{background:var(--green)} .kpi.good .v{color:var(--green)}
+.kpi.warn::after{background:var(--amber)} .kpi.warn .v{color:var(--amber)}
+
+/* ============ TL;DR ============ */
+.tldr{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--primary);
+  border-radius:var(--radius);padding:22px 24px;margin-top:8px}
+.tldr ol{margin:0;padding-left:20px;display:grid;gap:11px}
+.tldr li{padding-left:6px}
+.tldr li::marker{font-family:var(--mono);color:var(--primary);font-weight:600}
+.tldr b{color:var(--text)} .tldr code{font-family:var(--mono);font-size:.86em;background:var(--surface-3);
+  padding:2px 6px;border-radius:5px;color:var(--primary-2)}
+
+/* ============ Cards / Mermaid ============ */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow)}
+.diagram{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;
+  display:flex;justify-content:center;align-items:center;overflow-x:auto;min-height:80px}
+.diagram svg{max-width:100%;height:auto}
+.mermaid:not([data-processed]){visibility:hidden}
+.cap{font-family:var(--mono);font-size:12px;color:var(--faint);text-align:center;margin:10px 0 0}
+
+/* ============ Routes ============ */
+.routes{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.route{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;
+  position:relative;transition:transform .2s,border-color .2s}
+.route:hover{transform:translateY(-3px)}
+.route.pick{border-color:var(--green);box-shadow:0 0 0 1px var(--green) inset,var(--shadow)}
+.route .tag{font-family:var(--mono);font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:6px;margin-bottom:10px}
+.route.bad .tag{color:var(--red)} .route.warn .tag{color:var(--amber)} .route.pick .tag{color:var(--green)}
+.route h4{margin:0 0 6px;font-size:16px;font-family:var(--mono)}
+.route .src{font-family:var(--mono);font-size:11.5px;color:var(--faint);word-break:break-all;margin-bottom:12px}
+.route p{margin:0;font-size:13.5px;color:var(--muted)}
+.route .lic{margin-top:12px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted)}
+
+/* ============ Stack grid ============ */
+.stacks{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.stack-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px}
+.stack-card.primary{border-color:var(--primary)}
+.stack-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.stack-head h4{margin:0;font-family:var(--mono);font-size:16px}
+.pill{font-family:var(--mono);font-size:11px;font-weight:600;padding:4px 10px;border-radius:999px}
+.pill.blue{color:var(--primary-2);background:rgba(59,130,246,.14)}
+.pill.gray{color:var(--muted);background:var(--surface-2)}
+.pill.green{color:var(--green);background:var(--green-bg)}
+.pill.red{color:var(--red);background:var(--red-bg)}
+.complist{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:8px}
+.complist li{display:flex;gap:10px;font-size:13px;align-items:flex-start}
+.complist .nm{font-family:var(--mono);color:var(--text);font-weight:600;min-width:96px}
+.complist .ds{color:var(--muted)}
+.envline{margin-top:14px;font-size:12.5px;color:var(--muted);font-family:var(--mono)}
+.envline code{color:var(--primary-2)}
+
+/* ============ Brand-page screenshots ============ */
+.shots{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.shot{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px;overflow:hidden}
+.shot img{width:100%;height:auto;border-radius:10px;display:block;border:1px solid var(--border)}
+.shot .cap{margin-top:12px}
+.shot.ok{border-color:var(--green)} .shot.err{border-color:var(--red)}
+
+/* token chips */
+.tokens{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:6px}
+.tok{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:12px 14px;font-size:13px}
+.tok .tk{font-family:var(--mono);font-size:11.5px;color:var(--primary);font-weight:700;display:block;margin-bottom:5px}
+.tok .tv{color:var(--muted)}
+.tok .tv code{font-family:var(--mono);font-size:.85em;background:var(--surface-3);padding:1px 5px;border-radius:4px;color:var(--primary-2)}
+.swatch{display:inline-block;width:12px;height:12px;border-radius:3px;border:1px solid var(--border-strong);vertical-align:-1px;margin-right:5px}
+
+/* ============ Details / Accordion ============ */
+details{background:var(--surface);border:1px solid var(--border);border-radius:11px;margin-bottom:10px;overflow:hidden;transition:border-color .2s}
+details[open]{border-color:var(--border-strong)}
+summary{cursor:pointer;padding:15px 18px;display:flex;align-items:center;gap:12px;list-style:none;font-weight:500;user-select:none}
+summary::-webkit-details-marker{display:none}
+summary:hover{background:var(--surface-2)}
+summary .chev{margin-left:auto;color:var(--faint);transition:transform .2s;flex-shrink:0}
+details[open] summary .chev{transform:rotate(90deg)}
+.det-body{padding:2px 18px 18px;color:var(--muted);font-size:14px}
+.det-body p{margin:0 0 10px} .det-body p:last-child{margin-bottom:0}
+.det-body code{font-family:var(--mono);font-size:.86em;background:var(--surface-3);padding:2px 6px;border-radius:5px;color:var(--primary-2)}
+.det-body ul{margin:6px 0 0;padding-left:20px}
+.det-body li{margin-bottom:5px}
+.skey{font-family:var(--mono);font-size:12px;color:var(--primary);font-weight:600;min-width:34px;display:inline-block}
+
+/* pitfalls */
+.pit summary{font-size:14px}
+.pit .st{background:var(--amber-bg);color:var(--amber);font-family:var(--mono);font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:6px;flex-shrink:0}
+.two-col{display:grid;grid-template-columns:1.4fr 1fr;gap:24px;align-items:start}
+.reject{list-style:none;padding:0;margin:0;display:grid;gap:12px}
+.reject li{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:14px 16px;font-size:13.5px}
+.reject b{font-family:var(--mono);font-size:13px;color:var(--red);display:block;margin-bottom:5px}
+.reject span{color:var(--muted)}
+.reject code{font-family:var(--mono);font-size:.86em;background:var(--surface-3);padding:2px 6px;border-radius:5px;color:var(--primary-2)}
+
+/* security cards */
+.sec-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+.sec-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--green);
+  border-radius:var(--radius);padding:18px}
+.sec-card h4{margin:0 0 8px;font-family:var(--mono);font-size:14.5px;color:var(--text)}
+.sec-card p{margin:0;font-size:13.5px;color:var(--muted)}
+.sec-card code{font-family:var(--mono);font-size:.85em;background:var(--surface-3);padding:1px 5px;border-radius:4px;color:var(--primary-2)}
+
+/* prose list cards */
+.steps-list{list-style:none;margin:0;padding:0;display:grid;gap:10px;counter-reset:s}
+.steps-list li{background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:13px 16px 13px 46px;
+  position:relative;font-size:14px;color:var(--muted)}
+.steps-list li::before{counter-increment:s;content:counter(s);position:absolute;left:14px;top:13px;
+  font-family:var(--mono);font-size:12px;font-weight:700;color:var(--primary);
+  background:var(--surface-3);width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center}
+.steps-list li b{color:var(--text)}
+.steps-list li code{font-family:var(--mono);font-size:.86em;background:var(--surface-3);padding:2px 6px;border-radius:5px;color:var(--primary-2)}
+
+/* ============ Code ============ */
+.codewrap{position:relative;margin:6px 0 0}
+pre{background:var(--surface-3);border:1px solid var(--border);border-radius:11px;padding:16px 18px;overflow-x:auto;margin:0}
+code{font-family:var(--mono);font-size:13px;line-height:1.7}
+pre code{color:#cbd5e1}
+[data-theme="light"] pre code{color:#334155}
+.tok-c{color:var(--faint)} .tok-k{color:var(--primary-2)} .tok-s{color:var(--green)}
+.copy{position:absolute;top:9px;right:9px;background:var(--surface);border:1px solid var(--border);
+  color:var(--muted);border-radius:7px;padding:5px 10px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:.2s;z-index:2}
+.copy:hover{color:var(--text);border-color:var(--primary)}
+.copy.done{color:var(--green);border-color:var(--green)}
+
+/* ============ Tables ============ */
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:4px}
+.tbl th{text-align:left;font-family:var(--mono);font-size:12px;color:var(--muted);font-weight:600;
+  padding:10px 12px;border-bottom:1px solid var(--border-strong)}
+.tbl td{padding:11px 12px;border-bottom:1px solid var(--border);color:var(--muted);vertical-align:top}
+.tbl tr:last-child td{border-bottom:none}
+.tbl td b{color:var(--text)}
+.tbl code{font-family:var(--mono);font-size:.85em;background:var(--surface-3);padding:1px 5px;border-radius:4px;color:var(--primary-2)}
+.conf{font-family:var(--mono);font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;white-space:nowrap}
+.conf.hi{color:var(--green);background:var(--green-bg)} .conf.mid{color:var(--amber);background:var(--amber-bg)}
+.conf.lo{color:var(--red);background:var(--red-bg)}
+
+.toolbar{display:flex;gap:8px;margin-bottom:16px}
+.btn-sm{font-family:var(--mono);font-size:12px;color:var(--muted);background:var(--surface);
+  border:1px solid var(--border);border-radius:8px;padding:6px 12px;cursor:pointer;transition:.2s}
+.btn-sm:hover{color:var(--text);border-color:var(--border-strong)}
+
+footer{max-width:1140px;margin:0 auto;padding:40px 24px 60px;border-top:1px solid var(--border);
+  color:var(--faint);font-size:12.5px;font-family:var(--mono);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.totop{position:fixed;right:22px;bottom:22px;width:42px;height:42px;border-radius:50%;background:var(--primary);
+  color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;
+  pointer-events:none;transition:opacity .3s,transform .2s;box-shadow:var(--shadow);z-index:40}
+.totop.show{opacity:1;pointer-events:auto} .totop:hover{transform:translateY(-3px)}
+
+/* ============ Responsive ============ */
+@media(max-width:880px){
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .routes,.stacks,.shots{grid-template-columns:1fr}
+  .two-col{grid-template-columns:1fr}
+  .brand span{display:none}
+}
+@media(max-width:520px){
+  .kpis{grid-template-columns:1fr}
+  main,.hero,.nav-inner,footer{padding-left:16px;padding-right:16px}
+}
+</style>
+</head>
+<body>
+<div id="progress"></div>
+
+<!-- ============ NAV ============ -->
+<nav>
+  <div class="nav-inner">
+    <div class="brand"><span class="dot"></span><span>woow / oauth-callback</span></div>
+    <div class="nav-links" id="navlinks">
+      <a href="#summary">摘要</a>
+      <a href="#current">現況</a>
+      <a href="#target">目標流程</a>
+      <a href="#component">Component 設計</a>
+      <a href="#brand">品牌頁(方向A)</a>
+      <a href="#paas">paas 契約</a>
+      <a href="#security">安全</a>
+      <a href="#tests">測試</a>
+      <a href="#e2e">E2E</a>
+      <a href="#risks">邊界與風險</a>
+      <a href="#yagni">不做</a>
+    </div>
+    <button class="toggle" id="themeBtn" aria-label="切換明暗主題">
+      <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      <span id="themeTxt">Light</span>
+    </button>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <div class="badge"><span class="pulse"></span>設計文件 · status: approved · 路線一</div>
+  <h1>自訂 OAuth Callback 跳轉頁設計 <span class="accent">（路線一）</span></h1>
+  <p class="lead">把 OAuth 同意頁按「允許」後的 callback 跳轉頁，從 HA 共用公開頁 <b>my.home-assistant.io/redirect/oauth</b> 換成 <b>WOOW 自家、由 component 渲染、落在使用者本機 HA 的品牌頁</b>，達到「零第三方頁」。接 token 的邏輯 100% 重用 HA Core，<b>絕不 fork HA Core</b>。</p>
+  <div class="meta-chips">
+    <span class="chip">建立 <b>2026-06-18</b></span>
+    <span class="chip">更新 <b>2026-06-18</b></span>
+    <span class="chip">名稱 <b>custom-oauth-callback-page</b></span>
+    <span class="chip">研究筆記 <b>research-custom-callback-page</b></span>
+    <span class="chip">結論 <b style="color:var(--green)">採路線一 · 定案方向 A</b></span>
+  </div>
+  <div class="kpis">
+    <div class="kpi good"><div class="v">6<small> 步</small></div><div class="l">目標流程（路線一）總步驟</div></div>
+    <div class="kpi"><div class="v">5<small> 項</small></div><div class="l">paas 跨 repo 契約決策（已對齊）</div></div>
+    <div class="kpi good"><div class="v">0<small> 頁</small></div><div class="l">第三方頁 · token 全程不離本機</div></div>
+    <div class="kpi"><div class="v">方向 A</div><div class="l">品牌頁定案「忠於原版」</div></div>
+  </div>
+</header>
+
+<main>
+<!-- ============ §00 SUMMARY ============ -->
+<section id="summary">
+  <div class="sec-head"><span class="sec-num">00</span><h2>目標與背景 TL;DR</h2></div>
+  <p class="sec-sub">核心：零第三方頁；接 token 100% 重用 HA Core；新寫的只有 view 殼 + 品牌頁 + <code>redirect_uri</code> override。</p>
+  <div class="tldr">
+    <ol>
+      <li>把 callback 跳轉頁從 HA 共用公開頁 <code>my.home-assistant.io/redirect/oauth</code> 換成 <b>WOOW 自家、component 渲染、落在本機 HA 的品牌頁</b>，達到「<b>零第三方頁</b>」。</li>
+      <li>同意頁（<code>/oauth2/authorize</code>）已是 WOOW 自家樣式，<b>不在本題範圍</b>。</li>
+      <li>OAuth provider 就是 WOOW 自己，<code>redirect_uri</code> 接受什麼值由 WOOW 的 code 決定，<b>不被 my.home-assistant.io 綁死</b>。</li>
+      <li>可行性研究見 maestri 筆記 <code>research-custom-callback-page</code>（2026-06-17，judge-panel 結論：可行、但 <b>絕不 fork HA Core</b>）。本設計採其推薦的 <b>路線一</b>。</li>
+      <li>新寫的只有：view 殼 + 方向 A 品牌頁 + <code>redirect_uri</code> override；<code>_decode_jwt</code> / <code>async_configure</code> 等接 token 邏輯 <b>全部重用 HA Core</b>。</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ============ §01 CURRENT ============ -->
+<section id="current">
+  <div class="sec-head"><span class="sec-num">01</span><h2>現況流程（已與 HA Core 原始碼交叉驗證）</h2></div>
+  <p class="sec-sub">同意頁按「允許」後，state（本機 HA 密鑰簽章的 JWT）經 my-relay bounce 回本機 callback；<b>token 全程不離本機</b>。</p>
+  <div class="diagram"><div class="mermaid">sequenceDiagram
+    autonumber
+    participant B as 瀏覽器
+    participant W as WOOW 同意頁&lt;br/&gt;/oauth2/authorize
+    participant R as my-relay&lt;br/&gt;my.home-assistant.io
+    participant H as 本機 HA&lt;br/&gt;/auth/external/callback
+    participant C as component 後端
+    Note over H,W: WoowPaasOAuth2 繼承&lt;br/&gt;LocalOAuth2ImplementationWithPkce
+    B->>W: 按「允許」
+    W-->>R: 302 帶 code + state&lt;br/&gt;(JWT: flow_id, redirect_uri)
+    Note over R: relay 看不懂 JWT&lt;br/&gt;只負責 bounce
+    R-->>H: bounce 回本機 callback
+    H->>H: _decode_jwt(state) 解出 flow_id
+    H->>C: async_configure 餵回 config flow
+    C->>C: PKCE 換 token（token 不離本機）</div></div>
+  <p class="cap">▲ 現況：redirect_uri 走 HA Core async_get_redirect_uri()，因預載 "my" component 回寫死 MY_AUTH_CALLBACK_PATH</p>
+  <div style="margin-top:18px">
+    <details><summary><span class="skey">1</span>redirect_uri 來源<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p><code>WoowPaasOAuth2</code>（<code>oauth2.py</code>）繼承 <code>LocalOAuth2ImplementationWithPkce</code>，<code>redirect_uri</code> 走 HA Core <code>async_get_redirect_uri()</code>；因 HA 預設載入 <code>my</code> component，回傳寫死的 <code>MY_AUTH_CALLBACK_PATH</code>（<code>homeassistant/helpers/config_entry_oauth2_flow.py:67-68</code>）。</p></div></details>
+    <details><summary><span class="skey">2</span>同意頁「允許」→ 302 到 my-relay<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>WOOW 同意頁按「允許」→ 302 帶 <code>code</code>+<code>state</code> 到 my-relay；<code>state</code> 是用 <b>本機 HA 密鑰簽章的 JWT</b>（<code>{flow_id, redirect_uri}</code>，<code>_encode_jwt</code>），relay 看不懂、只負責 bounce 回本機 <code>/auth/external/callback</code>。</p></div></details>
+    <details><summary><span class="skey">3</span>本機 callback view 接手<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>本機 <code>OAuth2AuthorizeCallbackView</code>（<code>config_entry_oauth2_flow.py:603-644</code>）用 <code>_decode_jwt</code> 解出 <code>flow_id</code> → <code>async_configure</code> 餵回 config flow → component 後端用 PKCE 換 token。<b>token 全程不離本機。</b></p></div></details>
+  </div>
+</section>
+
+<!-- ============ §02 TARGET ============ -->
+<section id="target">
+  <div class="sec-head"><span class="sec-num">02</span><h2>目標流程（路線一）· 6 步</h2></div>
+  <p class="sec-sub">關鍵差異：<code>redirect_uri</code> override 成 <code>{HA-Frontend-Base}/auth/external/woow/callback</code>，<b>不走 my-relay</b>；callback 落在我們自寫的 view，render WOOW 品牌頁。</p>
+  <div class="diagram"><div class="mermaid">flowchart TD
+    S1["1 · HA UI 新增整合&lt;br/&gt;config_flow.async_step_user&lt;br/&gt;lazy 註冊 impl + callback view"] --> S2["2 · async_step_auth 產生 authorize URL&lt;br/&gt;redirect_uri override =&lt;br/&gt;{HA-Frontend-Base}/auth/external/woow/callback"]
+    S2 --> S3["3 · 瀏覽器 → WOOW /oauth2/authorize&lt;br/&gt;登入 + 同意頁（已 WOOW 樣式）"]
+    S3 --> S4["4 · 按「允許」→ 302 帶 code+state&lt;br/&gt;→ {本機HA}/auth/external/woow/callback&lt;br/&gt;（我們的 view）"]
+    S4 --> S5["5 · WoowOAuth2CallbackView.get&lt;br/&gt;_decode_jwt(state) · async_configure&lt;br/&gt;· render WOOW 品牌頁 + window.close()"]
+    S5 --> S6["6 · config flow 後端 PKCE&lt;br/&gt;POST /oauth2/token 換 token&lt;br/&gt;寫本機 · token 不離本機"]
+    classDef ovr fill:#1e3a5f,stroke:#60a5fa,color:#dbeafe,font-weight:bold;
+    classDef reuse fill:#10341f,stroke:#34d399,color:#bbf7d0;
+    classDef new fill:#3f311a,stroke:#fbbf24,color:#fde68a;
+    class S2 ovr; class S5 new; class S6 reuse;</div></div>
+  <p class="cap">▲ <span style="color:var(--amber)">黃 = 唯一新寫的「畫面」</span> · <span style="color:var(--primary-2)">藍 = redirect_uri override</span> · <span style="color:var(--green)">綠 = 重用 HA Core 接 token</span></p>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:28px 0 14px;color:var(--muted)">callback view 的成功 / 失敗分支（§4.3 + §9）</h3>
+  <div class="diagram"><div class="mermaid">flowchart TD
+    G["WoowOAuth2CallbackView.get(request)"] --> Q1{有 state?}
+    Q1 -->|缺 state| E1["品牌錯誤頁&lt;br/&gt;不呼叫 flow"]
+    Q1 -->|有| Q2{_decode_jwt(state)&lt;br/&gt;有效?}
+    Q2 -->|None（竄改/他機）| E2["400 品牌錯誤頁&lt;br/&gt;async_configure 未被呼叫"]
+    Q2 -->|有效| Q3{帶 code 或 error?}
+    Q3 -->|皆無| E3["錯誤頁"]
+    Q3 -->|code| OK["async_configure(flow_id,&lt;br/&gt;{state, code})&lt;br/&gt;→ 200 方向 A 成功頁&lt;br/&gt;『已成功連結 Home Assistant』&lt;br/&gt;+ window.close()"]
+    Q3 -->|error（拒絕）| FAIL["async_configure(flow_id,&lt;br/&gt;{state, error})&lt;br/&gt;→ flow abort user_rejected_authorize&lt;br/&gt;方向 A 失敗頁&lt;br/&gt;『Home Assistant 連結失敗』"]
+    classDef bad fill:#3f1d1d,stroke:#f87171,color:#fecaca;
+    classDef good fill:#10341f,stroke:#34d399,color:#bbf7d0;
+    classDef warn fill:#3f311a,stroke:#fbbf24,color:#fde68a;
+    class E1,E2,E3 bad; class OK good; class FAIL warn;</div></div>
+  <p class="cap">▲ 成功 / 失敗的伺服器渲染分支（單元測試只驗變體與文案/狀態碼，§7）</p>
+</section>
+
+<!-- ============ §03 COMPONENT ============ -->
+<section id="component">
+  <div class="sec-head"><span class="sec-num">03</span><h2>Component 側設計（本 repo）</h2></div>
+  <p class="sec-sub">各單元職責清楚、可獨立理解與測試（小而專注）。預設收合，點開看細節與程式碼。</p>
+  <div class="toolbar">
+    <button class="btn-sm" data-act="open" data-scope="#component">展開全部</button>
+    <button class="btn-sm" data-act="close" data-scope="#component">收合全部</button>
+  </div>
+
+  <details><summary><span class="skey">3.1</span><code>const.py</code> — 新增跨 repo 契約常數<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body">
+    <div class="codewrap"><button class="copy">複製</button><pre><code><span class="tok-k">WOOW_AUTH_CALLBACK_PATH</span> = <span class="tok-s">"/auth/external/woow/callback"</span></code></pre></div>
+  </div></details>
+
+  <details><summary><span class="skey">3.2</span><code>oauth2.py</code> — <code>WoowPaasOAuth2</code> override <code>redirect_uri</code><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body">
+    <p>略過 HA Core 的 <code>"my"</code> 判斷，回傳本機 woow callback；鏡像 <code>async_get_redirect_uri</code> 的 non-my 分支（3 行）。<code>http</code> = <code>homeassistant.helpers.http</code>；<code>HEADER_FRONTEND_BASE</code> 由 <code>config_entry_oauth2_flow</code> 匯入。</p>
+    <div class="codewrap"><button class="copy">複製</button><pre><code><span class="tok-k">@property</span>
+<span class="tok-k">def</span> redirect_uri(self) -&gt; str:
+    <span class="tok-s">"""Return the WOOW-hosted callback on the local HA instance.
+
+    Bypasses HA Core's my.home-assistant.io relay so the OAuth callback
+    lands directly on a component-rendered, WOOW-branded page.
+    """</span>
+    <span class="tok-k">if</span> (req := http.current_request.get()) <span class="tok-k">is None</span>:
+        <span class="tok-k">raise</span> RuntimeError(<span class="tok-s">"No current request in context"</span>)
+    <span class="tok-k">if</span> (ha_host := req.headers.get(HEADER_FRONTEND_BASE)) <span class="tok-k">is None</span>:
+        <span class="tok-k">raise</span> RuntimeError(<span class="tok-s">"No header in request"</span>)
+    <span class="tok-k">return</span> f<span class="tok-s">"{ha_host}{WOOW_AUTH_CALLBACK_PATH}"</span></code></pre></div>
+  </div></details>
+
+  <details><summary><span class="skey">3.3</span><code>oauth_callback_view.py</code>（新檔）— <code>WoowOAuth2CallbackView</code><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body">
+    <p><code>HomeAssistantView</code> 子類，<code>get()</code> 鏡像 <code>OAuth2AuthorizeCallbackView.get</code>，但 render WOOW 品牌頁。<b>重用</b> <code>_decode_jwt</code> + <code>async_configure</code>，差別只在 render。</p>
+    <div class="codewrap"><button class="copy">複製</button><pre><code><span class="tok-k">class</span> WoowOAuth2CallbackView(HomeAssistantView):
+    requires_auth = <span class="tok-k">False</span>
+    url = WOOW_AUTH_CALLBACK_PATH
+    name = <span class="tok-s">"woow_paas_smart_home:oauth_callback"</span>
+
+    <span class="tok-k">async def</span> get(self, request):
+        <span class="tok-c"># 1. 缺 state → 品牌錯誤頁</span>
+        <span class="tok-c"># 2. _decode_jwt(state) is None → 400 品牌錯誤頁（不呼叫 flow）</span>
+        <span class="tok-c"># 3. 有 code → user_input={state, code}；有 error → {state, error}；皆無 → 錯誤頁</span>
+        <span class="tok-c"># 4. await async_configure(flow_id=state["flow_id"], user_input=...)</span>
+        <span class="tok-c"># 5. render 方向 A 變體（成功/失敗）：自包含 HTML + inline vanilla JS controller</span></code></pre></div>
+    <p style="margin-top:10px">提供 idempotent 註冊輔助：</p>
+    <div class="codewrap"><button class="copy">複製</button><pre><code><span class="tok-k">def</span> async_register_woow_callback_view(hass) -&gt; <span class="tok-k">None</span>:
+    <span class="tok-k">if</span> hass.data.get(DATA_CALLBACK_VIEW_REGISTERED):
+        <span class="tok-k">return</span>
+    hass.http.register_view(WoowOAuth2CallbackView())
+    hass.data[DATA_CALLBACK_VIEW_REGISTERED] = <span class="tok-k">True</span></code></pre></div>
+  </div></details>
+
+  <details><summary><span class="skey">3.4</span>註冊時機（關鍵）— 兩處皆 idempotent<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body">
+    <p>首次 UI 設定時 <code>async_setup</code> <b>不會</b>被呼叫（既有 <code>config_flow.async_step_user</code> 即為此 lazy 註冊 impl）。callback view 必須在授權 302 回來前就存在，故：</p>
+    <ul>
+      <li><code>config_flow.async_step_user</code>：在 lazy 註冊 impl 旁，加 <code>async_register_woow_callback_view(hass)</code>（涵蓋首次設定 + reauth，因 reauth 也走 <code>async_step_user</code>）。</li>
+      <li><code>__init__.py async_setup</code>：亦呼叫一次（HA 重啟、既有 entry 已存在時就緒）。</li>
+      <li>兩處皆 idempotent（<code>hass.data</code> flag）。</li>
+    </ul>
+  </div></details>
+
+  <details><summary><span class="skey">3.5</span>HA Core 私有 helper 依賴（<code>_decode_jwt</code>）<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body">
+    <p><code>_decode_jwt</code> 為 HA Core 底線私有 helper（研究筆記點名的依賴風險）。以 CI 冒煙測試鎖住（見 §測試），HA 升版若改動 <code>_encode_jwt</code> / <code>_decode_jwt</code> 行為會 fail loudly。</p>
+  </div></details>
+</section>
+
+<!-- ============ §04 BRAND PAGE ============ -->
+<section id="brand">
+  <div class="sec-head"><span class="sec-num">04</span><h2>品牌頁內容 — 方向 A「忠於原版」</h2></div>
+  <p class="sec-sub">伺服器渲染的 <b>自包含 HTML</b>（inline style 照搬 mockup 的設計 token，<b>不載 React、不依賴外部 CSS/字型 CDN</b>）。狀態由伺服器決定後渲染對應變體，再以 <b>vanilla JS</b> 接行為。視覺參考截圖如下。</p>
+
+  <div class="shots">
+    <div class="shot ok">
+      <img src="assets/callback-design-success.png" alt="方向 A 成功卡片：已成功連結 Home Assistant" loading="lazy">
+      <p class="cap">▲ 成功變體：「已成功連結 Home Assistant」（assets/callback-design-success.png）</p>
+    </div>
+    <div class="shot err">
+      <img src="assets/callback-design-error.png" alt="方向 A 失敗卡片：Home Assistant 連結失敗" loading="lazy">
+      <p class="cap">▲ 失敗變體：「Home Assistant 連結失敗」（assets/callback-design-error.png）</p>
+    </div>
+  </div>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:28px 0 12px;color:var(--muted)">兩種狀態文案（逐字）</h3>
+  <div class="card" style="padding:8px 8px 4px">
+  <table class="tbl">
+    <thead><tr><th>區塊</th><th>成功</th><th>失敗</th></tr></thead>
+    <tbody>
+      <tr><td><b>Badge</b></td><td><span class="conf hi">已授權</span> 綠</td><td><span class="conf lo">授權失敗</span> 紅</td></tr>
+      <tr><td><b>標題</b></td><td>已成功連結 Home Assistant</td><td>Home Assistant 連結失敗</td></tr>
+      <tr><td><b>內文</b></td><td>Woow 已完成 OAuth 授權，系統將自動帶你返回 Home Assistant 整合頁面。你也可以立即返回。</td><td>授權未完成或已逾時。請確認下方的 Home Assistant 網址後重新嘗試。</td></tr>
+      <tr><td><b>狀態 pill</b></td><td>✓ 正在返回整合頁面…（綠）</td><td>✕ 授權遭拒或已逾時（紅）</td></tr>
+      <tr><td><b>主按鈕</b></td><td>立即返回整合頁</td><td>重新嘗試</td></tr>
+      <tr><td><b>次按鈕</b></td><td>（無）</td><td>關閉視窗（原 mockup「返回 Woow 主控台」，依決策改）</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:28px 0 12px;color:var(--muted)">設計 token</h3>
+  <div class="tokens">
+    <div class="tok"><span class="tk">卡片</span><span class="tv"><code>#FFF</code>、border <code>#E8EAEF</code>、radius <code>18px</code>、shadow <code>0 1px 2px / 0 4px 14px</code>、width <code>460px</code></span></div>
+    <div class="tok"><span class="tk">Header</span><span class="tv">height <code>188px</code>、漸層 <code>135deg #5B73FF→#3D5AF1→#2E45D6</code>、點陣 size <code>18px</code> opacity <code>.55</code>、右上光暈 200×200</span></div>
+    <div class="tok"><span class="tk">Badge</span><span class="tv">成功 text <span class="swatch" style="background:#157F43"></span><code>#157F43</code>/dot <code>#1FA055</code>；失敗 text <span class="swatch" style="background:#CF3439"></span><code>#CF3439</code>/dot <code>#E5484D</code>；底 <code>rgba(255,255,255,.94)</code> pill</span></div>
+    <div class="tok"><span class="tk">Icon tile</span><span class="tv">64×64、radius <code>16</code>、<code>#FFF</code>、shadow <code>0 10px 28px</code>；中間三顆 6×6 白點跑 <code>pulseDot</code>（1.4s，delay 0/.2/.4）</span></div>
+    <div class="tok"><span class="tk">標題 / 內文</span><span class="tv">標題 <code>21px/800</code> <code>#14161B</code> letter-spacing <code>-.02em</code>；內文 <code>14.5px/1.6</code> <code>#3C4150</code></span></div>
+    <div class="tok"><span class="tk">狀態 pill</span><span class="tv">成功 bg <span class="swatch" style="background:#E7F6EC"></span><code>#E7F6EC</code>/text <code>#157F43</code>；失敗 bg <span class="swatch" style="background:#FDECEC"></span><code>#FDECEC</code>/text <code>#CF3439</code></span></div>
+    <div class="tok"><span class="tk">執行個體 URL 區</span><span class="tv">label <code>11.5px/700</code> ls <code>.07em</code> <code>#8A909E</code>、上分隔線 <code>#EEF0F4</code>；URL mono <code>#3B69EF</code> <code>14px</code>；編輯鈕 34×34 radius <code>10</code>；helper <code>12px</code>「此網址僅儲存於你的瀏覽器。」</span></div>
+    <div class="tok"><span class="tk">按鈕</span><span class="tv">主：bg <span class="swatch" style="background:#3D5AF1"></span><code>#3D5AF1</code> white <code>14px/700</code> radius <code>10</code> padding <code>11px 18px</code>；次（失敗）：transparent <code>#3C4150</code> <code>14px/600</code></span></div>
+  </div>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:28px 0 12px;color:var(--muted)">SVG icon（stroke icon，viewBox 0 0 24 24）</h3>
+  <div class="card" style="padding:8px 8px 4px">
+  <table class="tbl">
+    <thead><tr><th style="width:140px">Icon</th><th>path</th></tr></thead>
+    <tbody>
+      <tr><td><b>Cube</b>（Woow）<br><span style="color:var(--faint)">stroke <code>#3D5AF1</code> w2</span></td><td><code>M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z</code> ＋ <code>m3.3 7 8.7 5 8.7-5</code> ＋ <code>M12 22V12</code></td></tr>
+      <tr><td><b>Home</b>（HA）<br><span style="color:var(--faint)">stroke <code>#18BCF2</code> w2</span></td><td><code>M3 10.5 12 3l9 7.5</code> ＋ <code>M5 9.5V21h14V9.5</code> ＋ <code>M9 21v-6h6v6</code></td></tr>
+      <tr><td><b>Check</b>（成功 pill）<br><span style="color:var(--faint)">currentColor w2.4</span></td><td><code>M20 6 9 17l-5-5</code></td></tr>
+      <tr><td><b>X</b>（失敗 pill）<br><span style="color:var(--faint)">currentColor w2.2</span></td><td><code>M18 6 6 18</code> ＋ <code>M6 6l12 12</code></td></tr>
+      <tr><td><b>Pencil</b>（編輯）<br><span style="color:var(--faint)">currentColor w2</span></td><td><code>M12 20h9</code> ＋ <code>M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z</code></td></tr>
+      <tr><td><b>keyframe</b></td><td><code>@keyframes pulseDot{0%,100%{opacity:.3}50%{opacity:1}}</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:28px 0 12px;color:var(--muted)">行為（vanilla JS controller，三決策）</h3>
+  <details open><summary><span class="skey">①</span>HA 執行個體 URL 欄（完全忠於原版）<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>可編輯、<code>localStorage['woow_ha_url']</code>，預設值 <code>window.location.origin</code>；編輯鈕 → 輸入 → 存 localStorage；helper「此網址僅儲存於你的瀏覽器。」此 URL 同時是下方倒數/立即返回的目標。</p></div></details>
+  <details><summary><span class="skey">②</span>成功返回（window.close() 優先 + fallback 倒數導回）<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>載入即試 <code>window.close()</code>（popup 情境 → 回 dialog 自動前進，同 HA 原生）。若約 1s 後仍開著（同分頁/被擋），顯示卡片與 5s 倒數「正在返回整合頁面…」，倒數結束 <code>location.href = {haUrl}/config/integrations/dashboard</code>；「立即返回整合頁」＝立即 <code>window.close()</code> → fallback 同導回。</p></div></details>
+  <details><summary><span class="skey">③</span>失敗按鈕<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>「重新嘗試」＝<code>window.close()</code> → fallback 導回 integrations；次鈕「關閉視窗」＝<code>window.close()</code>。頁面為獨立 HTML（不走 strings.json）。倒數預設 5s（同 mockup）。</p></div></details>
+  <p class="sec-sub" style="margin-top:14px">實作細節：<code>pulseDot</code> keyframe inline；JetBrains Mono 退化到 <code>ui-monospace, monospace</code>。清掉 mockup 的 React/styled-component 殘留（<code>data-dc-tpl</code>、<code>scp*</code>、<code>sc-interp</code>），改用語意化 markup。設計來源：Eugene 提供的視覺方向探索（standalone HTML，含方向 A/B/C），定案 <b>方向 A — 忠於原版</b>。</p>
+</section>
+
+<!-- ============ §05 PAAS ============ -->
+<section id="paas">
+  <div class="sec-head"><span class="sec-num">05</span><h2>paas 側契約（跨 repo · 由 maestri 驅動 paas-platform agent）</h2></div>
+  <p class="sec-sub">已與 <code>paas-platform</code> agent 對齊（2026-06-18）。對方確認可行，開發量 model+seed+healer+tests ≈ <b>0.5–1 天 + review</b>。</p>
+  <div class="card" style="padding:8px 8px 4px;margin-bottom:24px">
+  <table class="tbl">
+    <thead><tr><th style="width:40px">#</th><th style="width:110px">決策</th><th>定案</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><b>path 常數</b></td><td><code>/auth/external/woow/callback</code>（跨 repo 契約常數，兩端對齊）</td></tr>
+      <tr><td>2</td><td><b>scheme 尺度</b></td><td>公網 host 強制 https；http 僅限 loopback / 私有網段 / .local（RFC 8252 風格）。host 不限，只是 scheme 按 host 類別分</td></tr>
+      <tr><td>3</td><td><b>query/fragment</b></td><td>reject（callback view URL 乾淨無 query）</td></tr>
+      <tr><td>4</td><td><b>舊值去留</b></td><td><b>移除</b> my.home-assistant.io，只接受新 pattern（不走 superset）</td></tr>
+      <tr><td>5</td><td><b>flag 形態</b></td><td>由 paas 拍板；我方傾向 Selection <code>redirect_uri_match_mode</code>，尊重其 <code>require_pkce</code> Boolean 先例</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:8px 0 12px;color:var(--muted)">paas 端變更（研究筆記點名 + agent 補充）</h3>
+  <ol class="steps-list">
+    <li><code>src/models/oauth_client.py:144-147</code> <code>check_redirect_uri</code>：對 client_id <code>woow-ha-smart-home</code> 由精確比對放寬成安全 pattern（path 鎖 <code>/auth/external/woow/callback</code>、scheme 依 §5#2、reject query/fragment）。其他 client_id 維持 exact-match。</li>
+    <li>token endpoint（<code>src/controllers/oauth2.py</code>）的 redirect_uri 驗證套用同一放寬。</li>
+    <li><code>src/data/oauth_clients.xml:15</code>：<code>woow-ha-smart-home</code> 的 redirect_uri seed 改為新 pattern 表示（移除 my.home-assistant.io）。</li>
+    <li>healer/migration：<code>oauth_clients.xml</code> 為 <code>noupdate=1</code>，既有 stg/prod DB 需 healer（比照 <code>oauth_scope_updates.xml</code>）。manifest 走 healer 不需 bump（現 <b>18.0.1.0.40</b>）。</li>
+    <li><code>docs/reference/api/ha-component-integration.md</code>（約 :50）「redirect_uri 精確比對」字樣同步更新成放寬契約。</li>
+  </ol>
+
+  <div class="stacks" style="margin-top:24px">
+    <div class="stack-card primary">
+      <div class="stack-head"><h4>跨 repo 契約常數</h4><span class="pill blue">lock-step · 逐字一致</span></div>
+      <p style="font-size:13.5px;color:var(--muted);margin:0 0 12px">兩端逐字一致，<b style="color:var(--text)">改值屬 breaking</b>。</p>
+      <ul class="complist">
+        <li><span class="nm">client_id</span><span class="ds"><code style="font-family:var(--mono);background:var(--surface-3);padding:1px 5px;border-radius:4px">woow-ha-smart-home</code>（雙方都別動）</span></li>
+        <li><span class="nm">path</span><span class="ds">paas 側 <code style="font-family:var(--mono)">OAuthClient.HA_CALLBACK_PATH</code>、component 側 <code style="font-family:var(--mono)">const.py:WOOW_AUTH_CALLBACK_PATH</code>，值必須逐字一致</span></li>
+      </ul>
+      <div class="envline">lock-step 註記：因 #4 移除舊值，prod 切換需 component/paas 同步發版；stg E2E 兩端皆我方掌控、component 直接出新 callback，故 stg 上移除舊值無虞。</div>
+    </div>
+    <div class="stack-card">
+      <div class="stack-head"><h4>發版次序（a→d）</h4><span class="pill gray">與 paas 確認</span></div>
+      <ol class="steps-list" style="gap:8px">
+        <li>兩邊 spec 定稿（paas 已 ready）</li>
+        <li>paas 開 PR 實作 → merge develop</li>
+        <li>paas <code>deploy-stg</code> 起帶放寬的 stg</li>
+        <li>component 指向該 stg 接 E2E</li>
+      </ol>
+    </div>
+  </div>
+
+  <h3 style="font-family:var(--mono);font-size:15px;margin:28px 0 12px;color:var(--muted)">發版前待結問題（不擋 spec 定稿，發版前再結）</h3>
+  <details><summary>1 · prod 是否已有真實 HA 使用者綁 my.home-assistant.io？<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>決定 prod 發版窗口。補充：<code>refresh_token</code> 不帶 <code>redirect_uri</code>，既有 token 續期不受影響；只有「重新授權」會受 #4 移除舊值影響，影響面有限。</p></div></details>
+  <details><summary>2 · 是否有使用者在私有網段用「自訂網域（非 .local）」？<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><p>現規則「公網 host 一律 https」會要求這類使用者用 https；若此情境存在，引導其改用 IP 或 .local。</p></div></details>
+</section>
+
+<!-- ============ §06 SECURITY ============ -->
+<section id="security">
+  <div class="sec-head"><span class="sec-num">06</span><h2>安全設計（open-redirect 收斂）</h2></div>
+  <p class="sec-sub">放寬 host 的安全基礎是 PKCE 兜底；其餘以 path/scheme 白名單 + 簽章 state JWT 收斂攻擊面。</p>
+  <div class="sec-grid">
+    <div class="sec-card"><h4>PKCE 兜底</h4><p>被竊 code 無 <code>code_verifier</code>（僅合法 component 持有）→ 無法換 token。這是放寬 host 的安全基礎。</p></div>
+    <div class="sec-card"><h4>path + scheme 白名單</h4><p>open-redirect 面收斂到單一 path；公網強制 https。</p></div>
+    <div class="sec-card"><h4>簽章 state JWT（本機 HA 密鑰）</h4><p><code>_decode_jwt</code> 對竄改/他機 state 回 None → render 錯誤頁、不呼叫 <code>async_configure</code>。等同重用 HA Core 的 CSRF/state 防護。</p></div>
+    <div class="sec-card"><h4>放寬僅限 woow-ha-smart-home</h4><p>其他 client 不受影響。</p></div>
+  </div>
+</section>
+
+<!-- ============ §07 TESTS ============ -->
+<section id="tests">
+  <div class="sec-head"><span class="sec-num">07</span><h2>測試策略（TDD）</h2></div>
+  <p class="sec-sub">目的：未來測試保護、規格定義、連續整合、AI 自動測試。執行環境：HA devcontainer（ha-venv）內跑 hassfest/pytest，非 host；不安裝 PHCC。先寫測試（紅）→ 實作（綠）→ 重構，遵循 test-driven-development。</p>
+  <div class="toolbar">
+    <button class="btn-sm" data-act="open" data-scope="#tests">展開全部</button>
+    <button class="btn-sm" data-act="close" data-scope="#tests">收合全部</button>
+  </div>
+  <details><summary><code>tests/test_oauth2.py</code><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><ul>
+    <li><code>redirect_uri</code> 帶 <code>HA-Frontend-Base</code> header → 回 <code>{base}/auth/external/woow/callback</code>。</li>
+    <li>無 header / 無 current_request → raise。</li>
+    <li><b>即使 <code>"my"</code> 在 <code>hass.config.components</code> 也不回 my-relay</b>。</li>
+  </ul></div></details>
+  <details><summary><code>tests/test_oauth_callback_view.py</code><svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><ul>
+    <li>success：valid state → <code>async_configure</code> 被以 <code>{state, code}</code> 呼叫 → 200 HTML 含方向 A 成功文案（「已成功連結 Home Assistant」）+ <code>window.close</code>。</li>
+    <li>無效/竄改 state → 400，HTML 含方向 A 失敗文案（「Home Assistant 連結失敗」），<code>async_configure</code> <b>未</b>被呼叫。</li>
+    <li>缺 state、缺 code&error → 400 失敗頁。</li>
+    <li>error 參數（拒絕）→ <code>async_configure</code> 被以 <code>{state, error}</code> 呼叫 → 200 失敗頁。</li>
+    <li>view 註冊 idempotent（呼叫兩次不重複註冊/不報錯）。</li>
+    <li>註：倒數/<code>window.close</code>/URL 編輯+localStorage 等 client-side JS 行為以 E2E（§E2E）驗證，非 pytest 單元範圍；單元只驗伺服器渲染的變體與文案/狀態碼。</li>
+  </ul></div></details>
+  <details><summary><code>tests/test_init.py</code>（或擴充既有）<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><ul>
+    <li><code>async_step_user</code> / <code>async_setup</code> 後 callback view 已註冊。</li>
+  </ul></div></details>
+  <details><summary>CI 冒煙測試<svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg></summary><div class="det-body"><ul>
+    <li>assert <code>_encode_jwt</code>/<code>_decode_jwt</code> round-trip 正常 → 鎖 HA 版本漂移。</li>
+  </ul></div></details>
+</section>
+
+<!-- ============ §08 E2E ============ -->
+<section id="e2e">
+  <div class="sec-head"><span class="sec-num">08</span><h2>E2E 驗證（需 paas 先發 stg）</h2></div>
+  <p class="sec-sub">前提：paas-platform 將放寬發版到 stg（deploy 次序 a→d）。HA 登入 eugene/12341234；以 chrome-devtools / playwright-cli 自動化。</p>
+  <div class="diagram"><div class="mermaid">flowchart LR
+    A["1 · 新增整合&lt;br/&gt;localhost:8123&lt;br/&gt;Woow PaaS Smart Home"] --> B["2 · 登入 paas&lt;br/&gt;admin/admin&lt;br/&gt;同意頁按「允許」"]
+    B --> C["3 · 驗 callback&lt;br/&gt;落在 /auth/external/woow/callback&lt;br/&gt;方向 A 成功卡片&lt;br/&gt;window.close() 回 dialog"]
+    C --> D["4 · dialog 自動前進&lt;br/&gt;選 test1 workspace&lt;br/&gt;選 security access&lt;br/&gt;entry 建立成功"]
+    D --> E["5 ·（可選）模擬失敗&lt;br/&gt;竄改 state / 拒絕授權&lt;br/&gt;驗方向 A 失敗卡片"]
+    classDef step fill:#1e293b,stroke:#3b82f6,color:#f1f5f9;
+    classDef good fill:#10341f,stroke:#34d399,color:#bbf7d0;
+    classDef warn fill:#3f311a,stroke:#fbbf24,color:#fde68a;
+    class A,B step; class C,D good; class E warn;</div></div>
+  <p class="cap">▲ E2E 五步：新增整合 → 授權 → 驗 callback 成功卡 → entry 建立 → 模擬失敗</p>
+</section>
+
+<!-- ============ §09 RISKS ============ -->
+<section id="risks">
+  <div class="sec-head"><span class="sec-num">09</span><h2>邊界與風險</h2></div>
+  <p class="sec-sub">各邊界情境與對應行為。多數錯誤路徑都收斂成「品牌錯誤頁、不呼叫 flow」。</p>
+  <div class="card" style="padding:8px 8px 4px">
+  <table class="tbl">
+    <thead><tr><th style="width:34%">情境</th><th>行為</th></tr></thead>
+    <tbody>
+      <tr><td><b>使用者拒絕授權</b></td><td><code>error</code> 參數 → <code>async_configure({error})</code> → flow abort <code>user_rejected_authorize</code>；品牌取消頁</td></tr>
+      <tr><td><b>無效/竄改 state</b></td><td><code>_decode_jwt</code> None → 400 品牌錯誤頁，不呼叫 flow</td></tr>
+      <tr><td><b>缺 state / 缺 code&error</b></td><td>品牌錯誤頁</td></tr>
+      <tr><td><b>無 <code>HA-Frontend-Base</code>（非 UI 流程）</b></td><td><code>redirect_uri</code> raise（同 HA Core non-my 分支）；UI 流程必有此 header</td></tr>
+      <tr><td><b><code>window.close()</code> 被擋（同分頁）</b></td><td>顯示方向 A 卡片 + 5s 倒數後導回 <code>{haUrl}/config/integrations/dashboard</code>（見 §4.5）</td></tr>
+      <tr><td><b>瀏覽器連不到本機 HA（遠端 onboarding）</b></td><td>與 my-relay 同限制，文件註明</td></tr>
+      <tr><td><b>HA Core 升版改 <code>_decode_jwt</code></b></td><td>CI 冒煙測試 fail loudly</td></tr>
+      <tr><td><b>跨 repo lock-step（#4 移除舊值）</b></td><td>prod 需同步發版；stg 兩端皆我方掌控</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============ §10 YAGNI ============ -->
+<section id="yagni">
+  <div class="sec-head"><span class="sec-num">10</span><h2>不做（YAGNI）</h2></div>
+  <p class="sec-sub">刻意排除的範圍，避免過度工程。</p>
+  <ul class="reject">
+    <li><b>✕ 不 fork / 不複製 HA Core OAuth helper</b><span>只重用 <code>_decode_jwt</code> / <code>async_configure</code>。</span></li>
+    <li><b>✕ 不自架 WOOW relay 頁（路線二）</b><span>採路線一，由 component 自家 view 渲染品牌頁。</span></li>
+    <li><b>✕ 不為遠端 onboarding 另做 my-relay fallback</b><span>維持與 my-relay 相同的本機可達限制。</span></li>
+    <li><b>✕ component 不主動偵測可達性</b><span>不條件式切換 <code>redirect_uri</code>。</span></li>
+  </ul>
+</section>
+</main>
+
+<footer>
+  <span>設計文件 · status: approved · 2026-06-18 · 由 2026-06-18-custom-oauth-callback-page-design.md 生成</span>
+  <span>woow_paas_smart_home / oauth-callback</span>
+</footer>
+<button class="totop" id="totop" aria-label="回到頂部"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 15l-6-6-6 6"/></svg></button>
+
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+const themeVars = (light) => light ? {
+  background:'#FFFFFF', primaryColor:'#EFF6FF', primaryTextColor:'#0F172A', primaryBorderColor:'#3B82F6',
+  lineColor:'#94A3B8', secondaryColor:'#F1F5F9', tertiaryColor:'#F8FAFC', tertiaryTextColor:'#0F172A',
+  fontFamily:'IBM Plex Sans, system-ui, sans-serif', fontSize:'13px'
+} : {
+  background:'#1E293B', primaryColor:'#243349', primaryTextColor:'#F1F5F9', primaryBorderColor:'#3B82F6',
+  lineColor:'#64748B', secondaryColor:'#1E3A5F', tertiaryColor:'#172033', tertiaryTextColor:'#F1F5F9',
+  fontFamily:'IBM Plex Sans, system-ui, sans-serif', fontSize:'13px'
+};
+
+/* 直接渲染頁面上所有 .mermaid 區塊。首次載入先保存原始語法,
+   主題切換時還原語法、清掉 data-processed,再用 mermaid.run() 以新主題色重繪。 */
+const mNodes = [...document.querySelectorAll('.mermaid')];
+mNodes.forEach(n => { n.dataset.src = n.textContent; });
+
+async function renderDiagrams(){
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  mermaid.initialize({ startOnLoad:false, theme:'base', securityLevel:'loose',
+    flowchart:{ curve:'basis', htmlLabels:true, padding:14 }, themeVariables: themeVars(light) });
+  mNodes.forEach(n => { n.textContent = n.dataset.src; n.removeAttribute('data-processed'); });
+  try{ await mermaid.run({ nodes: mNodes }); }
+  catch(e){ console.error('mermaid render failed', e); }
+}
+renderDiagrams();
+
+/* ----- theme toggle ----- */
+const root = document.documentElement, tBtn = document.getElementById('themeBtn'),
+      tTxt = document.getElementById('themeTxt'), tIcon = document.getElementById('themeIcon');
+const moonPath = '<path d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z"/>';
+const sunPath = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+function applyTheme(t){
+  root.setAttribute('data-theme', t);
+  tTxt.textContent = t === 'dark' ? 'Light' : 'Dark';
+  tIcon.innerHTML = t === 'dark' ? sunPath : moonPath;
+  try{ localStorage.setItem('woow-cb-theme', t); }catch(e){}
+  renderDiagrams();
+}
+try{ const saved = localStorage.getItem('woow-cb-theme'); if(saved) applyTheme(saved); }catch(e){}
+tBtn.addEventListener('click', () => applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+
+/* ----- copy buttons ----- */
+document.querySelectorAll('.copy').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const code = btn.parentElement.querySelector('code');
+    navigator.clipboard.writeText(code.innerText).then(() => {
+      btn.textContent = '已複製'; btn.classList.add('done');
+      setTimeout(() => { btn.textContent = '複製'; btn.classList.remove('done'); }, 1600);
+    });
+  });
+});
+
+/* ----- expand/collapse all ----- */
+document.querySelectorAll('[data-act]').forEach(b => {
+  b.addEventListener('click', () => {
+    const open = b.dataset.act === 'open';
+    document.querySelectorAll(b.dataset.scope + ' details').forEach(d => d.open = open);
+  });
+});
+
+/* ----- scroll progress + totop ----- */
+const prog = document.getElementById('progress'), totop = document.getElementById('totop');
+const onScroll = () => {
+  const h = document.documentElement.scrollHeight - innerHeight;
+  prog.style.width = (h > 0 ? (scrollY / h) * 100 : 0) + '%';
+  totop.classList.toggle('show', scrollY > 500);
+};
+addEventListener('scroll', onScroll, { passive:true }); onScroll();
+totop.addEventListener('click', () => scrollTo({ top:0, behavior:'smooth' }));
+
+/* ----- scroll-spy ----- */
+const links = [...document.querySelectorAll('.nav-links a')];
+const spy = new IntersectionObserver(entries => {
+  entries.forEach(en => {
+    if(en.isIntersecting){
+      links.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + en.target.id));
+    }
+  });
+}, { rootMargin:'-45% 0px -50% 0px' });
+document.querySelectorAll('main section').forEach(s => spy.observe(s));
+</script>
+</body>
+</html>

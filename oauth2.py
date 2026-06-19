@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import http
 from homeassistant.helpers.config_entry_oauth2_flow import (
+    HEADER_FRONTEND_BASE,
     LocalOAuth2ImplementationWithPkce,
 )
 
@@ -14,6 +16,7 @@ from .const import (
     OAUTH2_CLIENT_ID,
     OAUTH2_SCOPES,
     OAUTH2_TOKEN,
+    WOOW_AUTH_CALLBACK_PATH,
 )
 
 
@@ -32,6 +35,21 @@ class WoowPaasOAuth2(LocalOAuth2ImplementationWithPkce):
         # super() returns {"code_challenge": ..., "code_challenge_method": "S256"}
         data.update(super().extra_authorize_data)
         return data
+
+    @property
+    def redirect_uri(self) -> str:
+        """Return the WOOW-hosted callback on the local HA instance.
+
+        Bypasses HA Core's my.home-assistant.io relay (async_get_redirect_uri
+        returns MY_AUTH_CALLBACK_PATH whenever the `my` component is loaded) so
+        the OAuth callback lands directly on a component-rendered WOOW page.
+        Mirrors HA Core's non-`my` branch.
+        """
+        if (req := http.current_request.get()) is None:
+            raise RuntimeError("No current request in context")
+        if (ha_host := req.headers.get(HEADER_FRONTEND_BASE)) is None:
+            raise RuntimeError("No header in request")
+        return f"{ha_host}{WOOW_AUTH_CALLBACK_PATH}"
 
 
 def create_implementation(hass: HomeAssistant) -> WoowPaasOAuth2:

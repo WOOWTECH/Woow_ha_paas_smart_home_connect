@@ -44,6 +44,7 @@ from .const import (
     PRODUCT_SMART_HOME,
 )
 from .oauth2 import create_implementation
+from .oauth_callback_view import async_register_woow_callback_view
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             config_entry_oauth2_flow.async_register_implementation(
                 self.hass, self.DOMAIN, create_implementation(self.hass)
             )
+        async_register_woow_callback_view(self.hass)
         return await super().async_step_user(user_input)
 
     async def async_step_reauth(
