@@ -37,6 +37,9 @@
         "description": "Your Woow PaaS authorization has expired or is missing required permissions. Select Submit to re-authorize."
       }
     },
+    "progress": {
+      "wait_for_device": "Open {url} in a browser and enter the code {code}. Setup continues automatically once you authorize."
+    },
     "create_entry": {
       "default": "Successfully connected to {name}"
     },
@@ -50,7 +53,8 @@
       "no_workspaces": "No workspaces found for your account. Please create a workspace first.",
       "no_homes": "No smart homes found in the selected workspace.",
       "no_accesses": "No security accesses found in the selected workspace.",
-      "reauth_successful": "Re-authentication was successful."
+      "reauth_successful": "Re-authentication was successful.",
+      "device_authorization_failed": "Device authorization failed or timed out. Please try again."
     }
   },
   "entity": {

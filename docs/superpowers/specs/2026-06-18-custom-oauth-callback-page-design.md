@@ -341,4 +341,12 @@ config flow 起步讀 `http.current_request.get().headers['User-Agent']`（前�
 - 路線一（PR #7）保留為 browser 路徑，**不白做**。
 
 ### 11.6 狀態
-架構已定（hybrid + UA 偵測）。待辦：paas 出 device flow spec/實作 + 發 stg → component 實作 device flow + 分流 + 驗證真實 UA → E2E（app + browser）。屬獨立後續，另起 spec/plan。
+架構已定（hybrid + UA 偵測）。
+- **component 側 device flow 已實作**（分支 `feat/oauth-device-flow`，stacked on PR #7）：
+  `async_step_user` 讀 UA 分流、`async_step_device`（`async_show_progress` + RFC 8628 輪詢，
+  尊重 `authorization_pending`/`slow_down`/`expired_token`/`access_denied`）、`async_step_device_finish`
+  **重用 `async_oauth_create_entry`** 接回既有 workspace/product/access（reauth 也走同路）、token 寫成與
+  `OAuth2Session` 相容（refresh 用既有 impl）。const 加 `OAUTH2_DEVICE_AUTHORIZATION`/`DEVICE_CODE_GRANT_TYPE`；
+  strings 加 `progress.wait_for_device`/`abort.device_authorization_failed`。37 tests + hassfest 0 invalid。
+- **待辦**：paas 出 device flow（device_authorization endpoint + 驗證頁 + device_code grant）發 stg →
+  E2E（app 實機：device 碼→驗證頁→輪詢完成→dialog 前進；同時 **log 確認 app 真實 UA** 收斂 `_is_companion_app`）。
