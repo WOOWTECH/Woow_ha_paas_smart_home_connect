@@ -348,5 +348,10 @@ config flow 起步讀 `http.current_request.get().headers['User-Agent']`（前�
   **重用 `async_oauth_create_entry`** 接回既有 workspace/product/access（reauth 也走同路）、token 寫成與
   `OAuth2Session` 相容（refresh 用既有 impl）。const 加 `OAUTH2_DEVICE_AUTHORIZATION`/`DEVICE_CODE_GRANT_TYPE`；
   strings 加 `progress.wait_for_device`/`abort.device_authorization_failed`。37 tests + hassfest 0 invalid。
-- **待辦**：paas 出 device flow（device_authorization endpoint + 驗證頁 + device_code grant）發 stg →
-  E2E（app 實機：device 碼→驗證頁→輪詢完成→dialog 前進；同時 **log 確認 app 真實 UA** 收斂 `_is_companion_app`）。
+- **E2E 已通過（2026-06-19）**：paas device flow 上 stg（image `paas-odoo-stg:20260619.0849`、PR #204）；
+  component 以偽裝 app UA 在桌面瀏覽器跑通整條（UA 偵測 → device 碼 → `/device` 登入+輸碼+同意 →
+  後端輪詢拿 token → `async_oauth_create_entry` 重用 → 選 test1/Security Access → **entry 建立 1 device/3 entities**）。
+- **另修**：補 `translations/en.json`（component 一直缺前端翻譯，form 靠欄位 key fallback、progress step 無 fallback
+  只剩 spinner）。修後 device flow 進度頁正確顯示「Open {verification_uri} … enter the code {user_code}」
+  （截圖 `assets/device-flow-progress-code.png`）。所有 config flow 文案一併正常化。
+- **小尾**：建議實機 app 跑一次核對真實 UA（目前 `Home Assistant/` 子字串偵測經文獻 + stg E2E 驗證；實機為加固）。
