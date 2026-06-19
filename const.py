@@ -42,6 +42,11 @@ API_PATH_SA_ACCESS_STATUS = "/api/security-access/accesses/{access_id}/status"
 # OAuth2 endpoints
 OAUTH2_AUTHORIZE = "/oauth2/authorize"
 OAUTH2_TOKEN = "/oauth2/token"
+# OAuth2 Device Authorization Grant (RFC 8628) — used for HA Companion App
+# onboarding, where the redirect/window.open web flow can't complete in-app
+# (HA-wide limitation; see design doc §11). Browser onboarding keeps the web flow.
+OAUTH2_DEVICE_AUTHORIZATION = "/oauth2/device_authorization"
+DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 # OAuth2 public client (PKCE-only, no client_secret).
 # This client_id is registered as a public client on paas-platform and may be
