@@ -3,7 +3,7 @@ name: custom-oauth-callback-page
 description: 以 component 自家 view 取代 my.home-assistant.io OAuth callback 跳轉頁（路線一）
 status: approved
 created: 2026-06-18T00:03:11Z
-updated: 2026-06-18T14:49:48Z
+updated: 2026-06-19T06:46:19Z
 ---
 
 # 自訂 OAuth Callback 跳轉頁設計（路線一）
@@ -298,4 +298,47 @@ paas 端變更（研究筆記點名 + agent 補充）：
 - 不 fork / 不複製 HA Core OAuth helper（只重用 `_decode_jwt`/`async_configure`）。
 - 不自架 WOOW relay 頁（路線二）。
 - 不為遠端 onboarding 另做 my-relay fallback（維持與 my-relay 相同的本機可達限制）。
-- component 不主動偵測可達性、不條件式切換 redirect_uri。
+- component 不主動偵測可達性、不條件式切換 redirect_uri（§11 的 UA 分流是「選流程」，非「切 redirect_uri」，不在此列）。
+
+## 11. App onboarding 限制與 device flow（hybrid）— 2026-06-19 調查定論
+
+### 11.1 發現：redirect/authorization-code flow 在 HA Companion App 內必壞（HA 通病，非本方案造成）
+研究 workflow（4 角度 + 3 對抗式驗證皆 refuted=False，high）+ 使用者實機驗證確認：
+- HA 前端 `step-flow-external.ts firstUpdated()` 用 `window.open(authorizeUrl)` 開授權頁；
+  Companion App WebView 原生攔截 → 踢到**系統外部瀏覽器**（iOS `createWebViewWith(targetFrame==nil)`→`openURLInBrowser` 預設 Safari；Android `shouldOverrideUrlLoading` 跨 host→`Intent(ACTION_VIEW)`）。
+- config flow 完成靠後端 `async_configure` + WebSocket 推 `progressed` 事件給 app WebView dialog。
+  使用者切到外部瀏覽器→app 背景化→WebSocket 事件漏接且 resume 不補 → **app 內 dialog 卡死**。
+- **實機實測**：完成 paas 同意後切回 app，dialog **未前進**（確認研究結論）。
+- callback 頁不論由 component（路線一）、paas（路線二）或 my.home-assistant.io 渲染都救不了——
+  被踢出去的是「授權頁本身」。`homeassistant://`（x-callback-url）是捷徑用、無法把 OAuth code 交回 config flow。
+- 來源：HA core `config_entry_oauth2_flow.py`、frontend `step-flow-external.ts`/`dialog-data-entry-flow.ts`、
+  iOS `WebViewController+WebKitDelegates.swift`/`Utils.swift`、Android `WebViewActivity.kt`、my.home-assistant.io entitlements、HA architecture issue #832 / discussion #1299。
+
+### 11.2 決策：hybrid（browser=路線一、app=device flow RFC 8628）
+唯一能在 app 內完成 integration OAuth 的是 **OAuth2 Device Authorization Grant**（Google/GitHub 即此，使用者實機看到 `google.com/device` + code 證實）。device flow 無 redirect/callback/window.open → app OK。
+
+| 場景 | 流程 |
+|---|---|
+| 桌面/手機**瀏覽器** | 路線一 host-flexible callback（authorization_code，無縫、有自訂頁）— 已完成（PR #7） |
+| **HA Companion App** | **device flow**（RFC 8628，輸碼 + 後端輪詢）— 待做 |
+
+兩流程掛在**同一個 client**（`woow-ha-smart-home` 加 `device_code` grant）。
+
+### 11.3 分流：User-Agent 自動偵測（先驗證真實 UA）
+config flow 起步讀 `http.current_request.get().headers['User-Agent']`（前端推進 flow 的 REST 請求帶 WebView UA，同 `redirect_uri` override 機制）：UA 含 `Home Assistant/` → app → device flow；否則 → 路線一。
+- iOS UA 含 `Home Assistant/<ver>` + `io.robbie.HomeAssistant`；Android 含 `Home Assistant/<ver>` + `; wv`。
+- **實作時先 log 一次 app 實際 UA 確認再寫比對**（勿猜，UA 隨版本漂移）。
+
+### 11.4 paas 契約（device flow，paas 已確認可行 ~3–5 人天）
+1. `POST /oauth2/device_authorization`：client_id(+scope) → `device_code`/`user_code`/`verification_uri`/`verification_uri_complete`/`expires_in`/`interval`（RFC 8628 §3.2）。
+2. device 驗證頁（如 `https://stg.woowtech.io/device`）：登入 + 輸 user_code + 同意（可 WOOW 品牌化）。
+3. token endpoint 接 `grant_type=urn:ietf:params:oauth:grant-type:device_code` → access+refresh token；未完成回 `authorization_pending`/`slow_down`/`expired_token`/`access_denied`。
+4. 安全：user_code ≥20 bits entropy + rate limit/lockout、polling 負荷、cleanup cron、`/device` HTTPS+CSRF。
+
+### 11.5 component 設計（device flow）
+- 範本：HA core `homeassistant/components/github/config_flow.py`（`async_show_progress` + `progress_task` 輪詢）。
+- `async_step_user` 依 UA 分流；`async_step_device`：打 device_authorization → `async_show_progress`(顯示 url+user_code) → 背景輪詢 token → 完成後**重用既有 workspace/product/access 步驟**；token 寫成與 `OAuth2Session` 相容（refresh 走既有 `WoowPaasOAuth2._async_refresh_token`）。
+- 路線一（PR #7）保留為 browser 路徑，**不白做**。
+
+### 11.6 狀態
+架構已定（hybrid + UA 偵測）。待辦：paas 出 device flow spec/實作 + 發 stg → component 實作 device flow + 分流 + 驗證真實 UA → E2E（app + browser）。屬獨立後續，另起 spec/plan。
