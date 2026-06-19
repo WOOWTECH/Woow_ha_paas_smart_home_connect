@@ -1,0 +1,80 @@
+{
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "Choose authentication method"
+      },
+      "select_workspace": {
+        "title": "Select Workspace",
+        "description": "Choose the workspace that contains your smart home or security access.",
+        "data": {
+          "workspace": "Workspace"
+        }
+      },
+      "select_product": {
+        "title": "Select Product",
+        "description": "Choose the product type to connect with this Home Assistant instance.",
+        "data": {
+          "product": "Product"
+        }
+      },
+      "select_home": {
+        "title": "Select Smart Home",
+        "description": "Choose the smart home to connect with this Home Assistant instance.",
+        "data": {
+          "home": "Smart Home"
+        }
+      },
+      "select_access": {
+        "title": "Select Security Access",
+        "description": "Choose the security access to connect with this Home Assistant instance.",
+        "data": {
+          "access": "Security Access"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Your Woow PaaS authorization has expired or is missing required permissions. Select Submit to re-authorize."
+      }
+    },
+    "progress": {
+      "wait_for_device": "Open {url} in a browser and enter the code {code}. Setup continues automatically once you authorize."
+    },
+    "create_entry": {
+      "default": "Successfully connected to {name}"
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
+      "invalid_auth": "Invalid authentication. Please re-authorize.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This product instance is already configured.",
+      "no_workspaces": "No workspaces found for your account. Please create a workspace first.",
+      "no_homes": "No smart homes found in the selected workspace.",
+      "no_accesses": "No security accesses found in the selected workspace.",
+      "reauth_successful": "Re-authentication was successful.",
+      "device_authorization_failed": "Device authorization failed or timed out. Please try again."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "tunnel_status": {
+        "name": "Tunnel Status",
+        "state": {
+          "connected": "Connected",
+          "disconnected": "Disconnected",
+          "error": "Error",
+          "starting": "Starting",
+          "unknown": "Unknown"
+        }
+      },
+      "tunnel_url": {
+        "name": "Tunnel URL"
+      },
+      "route_url": {
+        "name": "Route {route}"
+      }
+    }
+  }
+}
