@@ -17,8 +17,10 @@ from .const import (
     CONF_HOME_NAME,
     CONF_PRODUCT_TYPE,
     DOMAIN,
+    MCP_SUBSCRIPTION_VALUE,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
+    McpIntegrationState,
     TunnelStatus,
 )
 from .coordinator import RouteInfo, TunnelCoordinator
@@ -59,6 +61,8 @@ async def async_setup_entry(
             TunnelStatusSensor(coordinator, entry),
             TunnelUrlSensor(coordinator, entry),
         ])
+        # #270：MCP sensor 依 /status 的 mcp 訂閱字串冪等 reconcile（僅 Smart Home）。
+        _setup_mcp_status_sensor(hass, coordinator, entry, async_add_entities)
         return
 
     # Security Access: the single aggregate URL sensor (<= 0.2.0) is replaced by
@@ -125,6 +129,97 @@ def _async_remove_legacy_url_entity(
     registry = er.async_get(hass)
     entity_id = registry.async_get_entity_id(
         Platform.SENSOR, DOMAIN, f"{entry.entry_id}_tunnel_url"
+    )
+    if entity_id is not None:
+        registry.async_remove(entity_id)
+
+
+class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
+    """社群 ha_mcp_tools integration 的三態狀態 sensor（見 #270 §5）.
+
+    僅 Smart Home 且該 home 綁定含 MCP 的方案（/status 的 ``mcp == "ha_mcp_tools"``）
+    時才存在。顯示值為 coordinator 每 poll 算好的本地三態偵測結果
+    （``mcp_integration_state``）——未安裝 / 已安裝未啟動 / 運作中。
+
+    存在與否由 :func:`_setup_mcp_status_sensor` 依訂閱字串冪等 reconcile；顯示值
+    的刷新沿用 CoordinatorEntity：每次 30s coordinator update 自動 write state。
+    """
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:robot"
+    _attr_has_entity_name = True
+    _attr_options = [state.value for state in McpIntegrationState]
+    _attr_translation_key = "mcp_status"
+
+    def __init__(
+        self, coordinator: TunnelCoordinator, entry: WoowConfigEntry
+    ) -> None:
+        """Initialize the MCP status sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_mcp_status"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the detected ha_mcp_tools three-state value (None if no data)."""
+        data = self.coordinator.data
+        if data is None:
+            return None
+        return data.mcp_integration_state
+
+
+@callback
+def _setup_mcp_status_sensor(
+    hass: HomeAssistant,
+    coordinator: TunnelCoordinator,
+    entry: WoowConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+) -> None:
+    """依 /status 的 mcp 訂閱字串，每 poll 冪等地建立／移除 McpStatusSensor.
+
+    ``mcp == "ha_mcp_tools"``（400 檔）→ 確保存在一顆 sensor。
+    ``mcp == ""``（150 檔／退訂／降頻）→ 確保不存在（含先前建過的，從 registry 移除）。
+
+    平台每次同步都廣播當前 mcp 值（無另發「取消」信號），故降頻時 component 會看到
+    mcp 由 "ha_mcp_tools" 轉 ""，據此對稱移除 sensor（§5 reconcile 對稱性）。
+    """
+    present = {"value": False}  # 冪等旗標：避免重複新增／重複移除。
+
+    @callback
+    def _sync() -> None:
+        data = coordinator.data
+        if data is None:
+            return
+        subscribed = data.mcp == MCP_SUBSCRIPTION_VALUE
+        if subscribed and not present["value"]:
+            present["value"] = True
+            async_add_entities([McpStatusSensor(coordinator, entry)])
+        elif not subscribed and present["value"]:
+            present["value"] = False
+            _async_remove_mcp_entity(hass, entry)
+
+    # 初次收斂：訂閱中就建；未訂閱則清掉可能殘留的 registry entity（no-op if absent）——
+    # 對稱於 _async_remove_legacy_url_entity，保證每次 setup 都收斂到期望狀態。
+    data = coordinator.data
+    if data is not None and data.mcp == MCP_SUBSCRIPTION_VALUE:
+        present["value"] = True
+        async_add_entities([McpStatusSensor(coordinator, entry)])
+    else:
+        _async_remove_mcp_entity(hass, entry)
+
+    entry.async_on_unload(coordinator.async_add_listener(_sync))
+
+
+def _async_remove_mcp_entity(hass: HomeAssistant, entry: WoowConfigEntry) -> None:
+    """從 entity registry 移除 MCP sensor（冪等，缺席時 no-op）.
+
+    沿用 :func:`_async_remove_legacy_url_entity` 的對稱移除範式：
+    ``registry.async_remove`` 會連帶讓 live entity 下線。
+    """
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id(
+        Platform.SENSOR, DOMAIN, f"{entry.entry_id}_mcp_status"
     )
     if entity_id is not None:
         registry.async_remove(entity_id)

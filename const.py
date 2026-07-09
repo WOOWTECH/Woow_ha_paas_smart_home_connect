@@ -13,6 +13,18 @@ class TunnelStatus(StrEnum):
     ERROR = "error"
     UNKNOWN = "unknown"
 
+
+class McpIntegrationState(StrEnum):
+    """社群 ha_mcp_tools integration 的三態偵測值（見 #270 §5）.
+
+    純 HA 本地偵測結果，作為 MCP sensor 的 state 機器值。
+    """
+
+    NOT_INSTALLED = "not_installed"
+    INSTALLED_NOT_RUNNING = "installed_not_running"
+    RUNNING = "running"
+
+
 DOMAIN = "woow_paas_smart_home"
 
 # --- API ---
@@ -82,6 +94,14 @@ CONF_TUNNEL_ID = "tunnel_id"
 # CONF_SUBDOMAIN is smart-home only. Security Access tunnel-token has no subdomain;
 # its hostname(s) come from the access detail routes[].hostname instead.
 CONF_SUBDOMAIN = "subdomain"
+
+# --- MCP（#270 Smart Home MCP）---
+# 社群 integration 的 HA domain（github.com/homeassistant-ai/ha-mcp-integration，
+# manifest.json domain 實測 == 此字串）。偵測三態時用它查 config entries / manifest。
+HA_MCP_DOMAIN = "ha_mcp_tools"
+# 平台 /status payload 的 mcp 訂閱字串：== 此值代表 400 檔（該顯示 MCP sensor），
+# ""／缺欄位代表 150 檔或無訂閱（不顯示）。語意上與 HA_MCP_DOMAIN 不同，恰好同值。
+MCP_SUBSCRIPTION_VALUE = "ha_mcp_tools"
 
 # --- Platforms ---
 PLATFORMS: list[Platform] = [Platform.SENSOR]

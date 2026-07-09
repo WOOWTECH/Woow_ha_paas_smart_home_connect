@@ -74,6 +74,14 @@
       },
       "route_url": {
         "name": "Route {route}"
+      },
+      "mcp_status": {
+        "name": "MCP Tools",
+        "state": {
+          "not_installed": "Not installed",
+          "installed_not_running": "Installed, not running",
+          "running": "Running"
+        }
       }
     }
   }
