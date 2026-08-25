@@ -63,6 +63,7 @@
         "name": "Tunnel Status",
         "state": {
           "connected": "Connected",
+          "deleted": "Deleted",
           "disconnected": "Disconnected",
           "error": "Error",
           "starting": "Starting",

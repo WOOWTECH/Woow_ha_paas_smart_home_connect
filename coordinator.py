@@ -237,10 +237,19 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         | stopped  | disconnected | disconnected   |
         | running  | API fail     | unknown        |
         | stopped  | API fail     | disconnected   |
+        | any      | deleted      | deleted        |
         """
         # API failure (remote_status is None)
         if remote_status is None:
             return TunnelStatus.UNKNOWN if local_running else TunnelStatus.DISCONNECTED
+
+        # 遠端說 tunnel 已被刪除 ⇒ 優先於本地行程狀態（平台 #833）。tunnel 在
+        # Cloudflare 上已不存在，本地 cloudflared 就算還活著也連不到任何東西，那個
+        # running 不是健康訊號、是該被清掉的殘留。若讓它落進下面的既有分支，會得到
+        # running -> error、stopped -> disconnected —— 兩者都與「tunnel 還在、只是
+        # 沒連上」撞成同一個值，使用者無從分辨「非重建不可」與「等連線恢復就好」。
+        if remote_status == TunnelStatus.DELETED:
+            return TunnelStatus.DELETED
 
         # Both sources available
         if local_running and remote_status == TunnelStatus.CONNECTED:

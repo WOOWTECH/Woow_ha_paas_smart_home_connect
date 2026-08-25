@@ -9,6 +9,9 @@ class TunnelStatus(StrEnum):
     """Tunnel connection status values."""
 
     CONNECTED = "connected"
+    # tunnel 已在 Cloudflare 上被刪除（平台 #833 的第四格）。字面值必須與平台
+    # tunnel_status Selection 一致；語意與 DISCONNECTED 相反地「非重建不可」。
+    DELETED = "deleted"
     DISCONNECTED = "disconnected"
     ERROR = "error"
     UNKNOWN = "unknown"
