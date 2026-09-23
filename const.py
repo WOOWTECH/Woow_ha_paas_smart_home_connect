@@ -124,6 +124,12 @@ HA_MCP_DATA_WEBHOOK_ID = "webhook_id"
 HA_MCP_OPT_ENABLE_WEBHOOK = "enable_webhook"
 # HA 內建 webhook component 的固定路徑前綴（homeassistant.components.webhook）。
 HA_WEBHOOK_PATH = "/api/webhook/"
+# MCP URL sensor 的機器值。裝置頁的實體列只有約 310px 可用內容寬，扣掉名稱欄要的
+# 84px 只剩 226px——連 36 字元的 webhook id（278px）都塞不下，更不用說完整 URL。
+# 所以 state 只表達「現在有沒有可用的位址」，真正的位址走 connect_url 屬性；
+# 顯示字串由 strings.json 的 entity.sensor.mcp_connect_url.state 翻譯成
+# 「Open to copy」，直接告訴使用者點開這一列。詳見 README。
+MCP_URL_STATE_AVAILABLE = "available"
 
 # --- Platforms ---
 PLATFORMS: list[Platform] = [Platform.SENSOR]
