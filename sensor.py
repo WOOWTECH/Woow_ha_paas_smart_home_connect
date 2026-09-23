@@ -18,7 +18,6 @@ from .const import (
     CONF_PRODUCT_TYPE,
     DOMAIN,
     MCP_SUBSCRIPTION_VALUE,
-    MCP_URL_STATE_AVAILABLE,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
     McpIntegrationState,
@@ -171,43 +170,41 @@ class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
 
 class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
-    """MCP client 要填的遠端連線位址：state 放 webhook id，完整 URL 放 connect_url 屬性。
+    """MCP client 要填的完整遠端連線位址（tunnel URL + ha_mcp_tools 的 webhook 路徑）。
 
-    **為什麼 state 不是完整 URL**（這是量出來的，不是偏好）：HA 裝置頁的實體列
-    固定 350px 寬（與視窗大小無關），而完整 URL 從最後一個 ``-`` 到結尾是一整段
-    69 字元、520px 的不可斷字串——瀏覽器只在 ``-`` 後面斷行，``hui-generic-entity-row``
-    的狀態又沒有 ``overflow-wrap: anywhere``。那一段會撐開整列（需要 584px），把
-    名稱欄（``flex: 1 1 30%`` + ellipsis）壓到 24px，名稱只剩第一個字。
-    **縮短名稱救不了**：實測名稱改成單一字元，名稱欄仍是 24px——它拿到多少寬度
-    只取決於狀態的最小寬度。
-
-    改放 webhook id（36 字元 / 278px）後，名稱欄拿得到 72px，``MCP URL``（60px）
-    完整顯示，整列不溢出。完整 URL 走 ``connect_url`` 屬性，點開該列的詳細視窗即可
-    看到並複製（那裡是 ``word-break: break-word`` / 594px 寬，長字串正常換行）。
-
-    模板取用請用 ``state_attr('sensor.xxx_mcp_url', 'connect_url')``，不是 ``states()``。
+    state 就是那串網址本身。這是刻意的取捨——見下面「裝置頁的取捨」。
 
     與 :class:`McpStatusSensor` 成對存在：狀態那顆回答「MCP 有沒有在跑」，這顆回答
     「那要連去哪」。生命週期完全綁在一起（同一個訂閱閘門、同一輪 reconcile），因為
     對使用者而言少了任一顆，另一顆都不完整。
 
-    值為 ``None``（UI 顯示 unknown）而非讓 entity 消失，原因有二：
-    tunnel 斷線、ha_mcp_tools 沒跑、local-only 模式這三種「暫時沒有 URL」都會復原，
-    entity 消失會連帶丟掉歷史與 dashboard 參照；而且旁邊那顆狀態 sensor 已經說明了
-    是哪一種原因，這裡不需要再自己解釋一次。
+    值為 ``None``（UI 顯示 unknown）而非讓 entity 消失：tunnel 斷線、ha_mcp_tools
+    沒跑、local-only 模式這三種「暫時沒有 URL」都會復原，entity 消失會連帶丟掉歷史與
+    dashboard 參照；而且旁邊那顆狀態 sensor 已經說明了是哪一種原因。
 
-    ⚠️ state 與 ``connect_url`` 屬性都是**憑證**——webhook id 就是進入 MCP server
-    的鑰匙（ha_mcp_tools 預設 ``webhook_auth=none``，密鑰即網址）。兩者都會進 recorder
-    歷史、也會出現在任何顯示它們的 dashboard。這是刻意的取捨：使用者就是需要把它複製
-    出去貼給 MCP client，跟 ha_mcp_tools 自己在設定畫面顯示 "Remote connect URL"
-    是同一個決定。
+    **裝置頁的取捨（量測過，別再試著用縮短名稱解決）**：桌面版裝置頁的實體列固定
+    350px（與視窗大小無關），而這串網址從最後一個 ``-`` 到結尾是一整段 69 字元 /
+    520px 的不可斷字串——瀏覽器只在 ``-`` 後面斷行，``hui-generic-entity-row`` 的狀態
+    又沒有 ``overflow-wrap: anywhere``。那一段會撐開整列（需要 584px），把名稱欄
+    （``flex: 1 1 30%`` + ellipsis）壓到 24px 只剩一個字。實測把名稱改成單一字元也一樣是
+    24px——名稱欄拿到多少寬度只取決於狀態的最小寬度。
+
+    曾經改成短標籤（``available`` / "Open to copy"）換取名稱完整，但那讓使用者在 UI 上
+    完全拿不到網址：這個 HA 版本的 more-info 對話框沒有屬性區（只有狀態／歷史／
+    logbook），屬性等於隱形。**完整網址可見性優先**，所以 state 放回網址本身；
+    點開實體的詳細視窗，主狀態區是 ``word-break: break-word``，長網址會正常換行、
+    可直接選取複製（手機版尤其漂亮）。要讓桌面裝置頁那一列也不溢出，用主題或
+    card-mod 補一行 ``hui-generic-entity-row { overflow-wrap: anywhere; }``。
+
+    ⚠️ 這個值本身就是**憑證**——URL 裡的 webhook id 就是進入 MCP server 的鑰匙
+    （ha_mcp_tools 預設 ``webhook_auth=none``，密鑰即網址）。它會進 recorder 歷史、
+    也會出現在任何顯示它的 dashboard。這是刻意的取捨：使用者就是需要把它複製出去貼給
+    MCP client，跟 ha_mcp_tools 自己在設定畫面顯示 "Remote connect URL" 是同一個決定。
     """
 
-    _attr_device_class = SensorDeviceClass.ENUM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_icon = "mdi:transit-connection-variant"
     _attr_has_entity_name = True
-    _attr_options = [MCP_URL_STATE_AVAILABLE]
     _attr_translation_key = "mcp_connect_url"
 
     def __init__(
@@ -220,15 +217,11 @@ class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        """有可用位址時回 ``available``（顯示為 "Open to copy"），否則 None。
-
-        state 不帶位址本身：裝置頁那一列放不下，放了會把名稱欄壓到只剩一個字。
-        位址在 ``connect_url`` 屬性。與屬性同一個判準，兩者不會一個有值一個沒有。
-        """
+        """Return the full MCP connect URL, or None when there is not a usable one."""
         data = self.coordinator.data
-        if data is None or data.mcp_connect_url is None:
+        if data is None:
             return None
-        return MCP_URL_STATE_AVAILABLE
+        return data.mcp_connect_url
 
     @property
     def extra_state_attributes(self) -> dict[str, str] | None:
@@ -241,56 +234,9 @@ class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
         if data is None or data.mcp_connect_url is None:
             return None
         return {
-            "connect_url": data.mcp_connect_url,
             "webhook_id": data.mcp_webhook_id or "",
             "base_url": data.subdomain_url,
         }
-
-
-class McpConnectUrlFullSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
-    """完整 MCP 連線位址本體：state 就是那串 URL。**預設隱藏。**
-
-    為什麼要獨立一顆、又為什麼預設隱藏——HA 裝置頁的實體列放不下這串 URL：最長的
-    不可斷段是 69 字元 / 520px，而整列只有 350px（固定欄寬）。它會撐開整列、把名稱欄
-    壓到 24px 只剩一個字（實測；連把名稱改成單一字元都救不了，名稱欄拿到多少寬度只
-    取決於狀態的最小寬度）。所以：
-
-    * :class:`McpConnectUrlSensor`（``MCP URL``）**顯示**在診斷區，用短狀態值撐住版面。
-    * 這一顆**預設停用**，被收進裝置頁的「未啟用的實體」摺疊區，不佔一列、不會弄亂
-      版面。想要完整 URL 成為一級 entity 的人自己啟用它：啟用後
-      ``states('sensor.xxx_mcp_connect_url')`` 直接拿到 URL，詳細視窗的主狀態區是
-      ``word-break: break-word`` / 594px，長 URL 正常換行、可直接選取複製
-      （代價是它在診斷區的那一列會恢復成擠壓的樣子——那是使用者自己選的）。
-
-    用停用而不是隱藏（``entity_registry_visible_default = False``）：實測隱藏的 entity
-    在裝置頁**仍然會被列出來**（名稱後面加「已隱藏」），照樣溢出 234px、名稱照樣只剩
-    一個字，等於沒解決。停用才真的不佔版面。
-
-    不需要啟用它也拿得到 URL：``MCP URL`` 那顆的 ``connect_url`` 屬性就是同一個值，
-    模板用 ``state_attr()``、儀表板用 markdown 卡片都可以。
-    """
-
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_entity_registry_enabled_default = False
-    _attr_icon = "mdi:link-variant"
-    _attr_has_entity_name = True
-    _attr_translation_key = "mcp_connect_url_full"
-
-    def __init__(
-        self, coordinator: TunnelCoordinator, entry: WoowConfigEntry
-    ) -> None:
-        """Initialize the full-URL sensor."""
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_mcp_connect_url_full"
-        self._attr_device_info = _device_info(entry)
-
-    @property
-    def native_value(self) -> str | None:
-        """Return the full MCP connect URL, or None when there is not a usable one."""
-        data = self.coordinator.data
-        if data is None:
-            return None
-        return data.mcp_connect_url
 
 
 @callback
@@ -344,17 +290,12 @@ def _mcp_entities(
     return [
         McpStatusSensor(coordinator, entry),
         McpConnectUrlSensor(coordinator, entry),
-        McpConnectUrlFullSensor(coordinator, entry),
     ]
 
 
 # 移除時要掃的 unique_id 後綴，與 _mcp_entities 的組成一一對應。加新的 MCP sensor
 # 記得兩邊都加，否則退訂後會留下孤兒 entity。
-_MCP_UNIQUE_ID_SUFFIXES = (
-    "_mcp_status",
-    "_mcp_connect_url",
-    "_mcp_connect_url_full",
-)
+_MCP_UNIQUE_ID_SUFFIXES = ("_mcp_status", "_mcp_connect_url")
 
 
 def _async_remove_mcp_entities(hass: HomeAssistant, entry: WoowConfigEntry) -> None:

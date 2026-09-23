@@ -23,7 +23,6 @@ from custom_components.woow_paas_smart_home.coordinator import (
     TunnelStatusData,
 )
 from custom_components.woow_paas_smart_home.sensor import (
-    McpConnectUrlFullSensor,
     McpConnectUrlSensor,
     McpStatusSensor,
     RouteUrlSensor,
@@ -231,11 +230,7 @@ def test_mcp_reconcile_adds_when_subscribed() -> None:
 
     assert add.call_count == 1
     batch = add.call_args[0][0]
-    assert [type(e) for e in batch] == [
-        McpStatusSensor,
-        McpConnectUrlSensor,
-        McpConnectUrlFullSensor,
-    ]
+    assert [type(e) for e in batch] == [McpStatusSensor, McpConnectUrlSensor]
     coord.async_add_listener.assert_called_once()
 
 
@@ -261,7 +256,6 @@ async def test_mcp_reconcile_removes_on_unsubscribe(hass: HomeAssistant) -> None
     unique_ids = [
         f"{entry.entry_id}_mcp_status",
         f"{entry.entry_id}_mcp_connect_url",
-        f"{entry.entry_id}_mcp_connect_url_full",
     ]
     for unique_id in unique_ids:
         registry.async_get_or_create("sensor", DOMAIN, unique_id)
@@ -299,30 +293,31 @@ async def test_mcp_reconcile_noop_setup_when_unsubscribed(
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_connect_url_state_is_short_label() -> None:
-    """state 是短標籤 available（短到能讓列上的名稱完整顯示）；無資料時回 None。"""
+def test_mcp_connect_url_state_is_the_full_url() -> None:
+    """state 就是完整網址 = tunnel URL + /api/webhook/{webhook_id}；無資料時回 None。"""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     sensor = McpConnectUrlSensor(coord, _mcp_entry())
 
-    assert sensor.native_value == "available"
+    assert sensor.native_value == (
+        "https://paas-sm-home/api/webhook/mcp_" + "a" * 32
+    )
 
     coord.data = None
     assert sensor.native_value is None
 
 
-def test_mcp_connect_url_attribute_has_full_url() -> None:
-    """完整 URL 在 connect_url 屬性裡，並附上 base_url。"""
+def test_mcp_connect_url_attributes_expose_parts() -> None:
+    """屬性攤出組成部分（完整網址本身是 state，不重複放屬性）。"""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     attrs = McpConnectUrlSensor(coord, _mcp_entry()).extra_state_attributes
 
     assert attrs == {
-        "connect_url": "https://paas-sm-home/api/webhook/mcp_" + "a" * 32,
         "webhook_id": "mcp_" + "a" * 32,
         "base_url": "https://paas-sm-home",
     }
 
 
-def test_mcp_connect_url_state_and_attribute_agree_on_absence() -> None:
+def test_mcp_connect_url_state_and_attributes_agree_on_absence() -> None:
     """沒有可用位址時 state 與屬性一起消失，不會一個有值一個沒有。"""
     for coord in (
         _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING, webhook_id=None),
@@ -361,49 +356,23 @@ def test_mcp_connect_url_none_without_tunnel_url() -> None:
 def test_mcp_connect_url_has_no_double_slash() -> None:
     """subdomain_url 不帶尾斜線、路徑常數帶前斜線 → 接起來剛好一個斜線。"""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
-    url = McpConnectUrlSensor(coord, _mcp_entry()).extra_state_attributes["connect_url"]
+    url = McpConnectUrlSensor(coord, _mcp_entry()).native_value
 
+    assert url is not None
     assert "//api/webhook/" not in url
     assert url.count("/api/webhook/") == 1
 
 
-def test_mcp_connect_url_state_fits_device_page_row() -> None:
-    """state 長度守衛：顯示在診斷區的那顆不可以帶長字串。
+def test_mcp_connect_url_is_not_an_enum_sensor() -> None:
+    """守衛：這顆不可以再被改成 ENUM／短標籤。
 
-    裝置頁的實體列固定 350px、可用內容寬約 310px；``MCP URL`` 這個名稱要 84px，
-    所以 state 最多只能佔約 226px（約 30 字元）。實測：36 字元的 webhook id 佔
-    278px，名稱欄就只剩 32px 被截；完整 URL（94 字元）更是把名稱壓到 24px。
-    這條測試就是那個回歸的閘門——任何人想把長字串塞回 state 都會在這裡被擋下。
+    曾經為了讓裝置頁那一列的名稱完整顯示，把 state 改成 ``available``（顯示
+    "Open to copy"），結果使用者在 UI 上完全拿不到網址——這個 HA 版本的 more-info
+    沒有屬性區，屬性等於隱形。決議是**完整網址可見性優先**。這條測試釘住那個決議。
     """
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
-    state = McpConnectUrlSensor(coord, _mcp_entry()).native_value
+    sensor = McpConnectUrlSensor(coord, _mcp_entry())
 
-    assert state is not None
-    assert len(state) <= 30
-    assert "/" not in state
-
-
-def test_mcp_connect_url_full_state_is_the_url() -> None:
-    """完整 URL 那顆：state 就是網址本身，且預設停用（不佔診斷區版面）。"""
-    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
-    sensor = McpConnectUrlFullSensor(coord, _mcp_entry())
-
-    assert sensor.native_value == (
-        "https://paas-sm-home/api/webhook/mcp_" + "a" * 32
-    )
-    assert sensor.entity_registry_enabled_default is False
-    assert sensor.unique_id == "test_entry_mcp_connect_url_full"
-
-    coord.data = None
-    assert sensor.native_value is None
-
-
-def test_mcp_connect_url_full_matches_short_sensor_attribute() -> None:
-    """兩顆不可以各說各話：完整那顆的 state == 短那顆的 connect_url 屬性。"""
-    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
-    entry = _mcp_entry()
-
-    assert (
-        McpConnectUrlFullSensor(coord, entry).native_value
-        == McpConnectUrlSensor(coord, entry).extra_state_attributes["connect_url"]
-    )
+    assert sensor.device_class is None
+    assert sensor.options is None
+    assert sensor.native_value.startswith("https://")

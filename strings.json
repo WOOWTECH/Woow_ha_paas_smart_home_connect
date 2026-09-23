@@ -85,13 +85,7 @@
         }
       },
       "mcp_connect_url": {
-        "name": "MCP URL",
-        "state": {
-          "available": "Open to copy"
-        }
-      },
-      "mcp_connect_url_full": {
-        "name": "MCP Connect URL"
+        "name": "MCP URL"
       }
     }
   }
