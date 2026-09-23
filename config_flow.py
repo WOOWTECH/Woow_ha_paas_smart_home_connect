@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from http import HTTPStatus
 import logging
+import time
 from typing import Any
 
 import aiohttp
 import voluptuous as vol
 
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlowResult
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers import config_entry_oauth2_flow, http
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.config_entry_oauth2_flow import (
     AbstractOAuth2FlowHandler,
     async_oauth2_request,
@@ -33,6 +36,7 @@ from .const import (
     CONF_TUNNEL_TOKEN,
     CONF_WORKSPACE_ID,
     CONF_WORKSPACE_NAME,
+    DEVICE_CODE_GRANT_TYPE,
     DOMAIN,
     ERR_CANNOT_CONNECT,
     ERR_INVALID_AUTH,
@@ -40,12 +44,37 @@ from .const import (
     ERR_NO_HOMES,
     ERR_NO_WORKSPACES,
     ERR_UNKNOWN,
+    OAUTH2_CLIENT_ID,
+    OAUTH2_DEVICE_AUTHORIZATION,
+    OAUTH2_SCOPES,
+    OAUTH2_TOKEN,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
 )
 from .oauth2 import create_implementation
+from .oauth_callback_view import async_register_woow_callback_view
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _request_user_agent() -> str:
+    """Return the User-Agent of the request driving the current flow step."""
+    if (req := http.current_request.get()) is None:
+        return ""
+    return req.headers.get("User-Agent", "")
+
+
+def _is_companion_app(user_agent: str) -> bool:
+    """Return True if the request comes from the HA Companion App WebView.
+
+    The app's WebView UA carries ``Home Assistant/<version>`` (iOS additionally
+    ``io.robbie.HomeAssistant``; Android additionally ``; wv``); a normal
+    browser does not. The redirect/window.open web flow can't complete inside
+    the app (HA-wide limitation, design §11), so app requests are routed to the
+    device flow. Verify the real device UA via the async_step_user debug log
+    before relying on this in production.
+    """
+    return "Home Assistant/" in user_agent
 
 
 class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
@@ -63,6 +92,10 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self._accesses: list[dict[str, Any]] = []
         self._selected_workspace_id: int | None = None
         self._selected_workspace_name: str | None = None
+        # Device flow (RFC 8628) state — used for HA Companion App onboarding.
+        self._device_flow: dict[str, Any] | None = None
+        self._device_token: dict[str, Any] | None = None
+        self._device_login_task: asyncio.Task[None] | None = None
         _LOGGER.debug("ConfigFlow initialized for domain %s", DOMAIN)
 
     @property
@@ -85,6 +118,14 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             config_entry_oauth2_flow.async_register_implementation(
                 self.hass, self.DOMAIN, create_implementation(self.hass)
             )
+        async_register_woow_callback_view(self.hass)
+        # The redirect/window.open web flow can't complete inside the HA
+        # Companion App (HA-wide limitation; design §11). Route the app to the
+        # device flow (RFC 8628); browsers keep the web flow + branded callback.
+        user_agent = _request_user_agent()
+        _LOGGER.debug("async_step_user User-Agent: %s", user_agent)
+        if _is_companion_app(user_agent):
+            return await self.async_step_device()
         return await super().async_step_user(user_input)
 
     async def async_step_reauth(
@@ -133,6 +174,121 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             )
         self._oauth_data = data
         return await self.async_step_select_workspace()
+
+    async def async_step_device(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Device Authorization Grant step (RFC 8628) for the Companion App.
+
+        Requests a device/user code, shows a progress screen telling the user to
+        open the verification URL and enter the code, and polls the token
+        endpoint in the background until authorized. No redirect/window.open, so
+        it completes inside the app WebView (unlike the web flow).
+        """
+        if self._device_flow is None:
+            try:
+                self._device_flow = await self._async_request_device_code()
+            except (aiohttp.ClientError, ApiError, KeyError):
+                _LOGGER.exception("Device authorization request failed")
+                return self.async_abort(reason="device_authorization_failed")
+
+        if self._device_login_task is None:
+            self._device_login_task = self.hass.async_create_task(
+                self._async_poll_device_token()
+            )
+
+        if self._device_login_task.done():
+            if self._device_login_task.exception() is not None:
+                return self.async_show_progress_done(next_step_id="device_failed")
+            return self.async_show_progress_done(next_step_id="device_finish")
+
+        return self.async_show_progress(
+            step_id="device",
+            progress_action="wait_for_device",
+            description_placeholders={
+                "url": self._device_flow["verification_uri"],
+                "code": self._device_flow["user_code"],
+            },
+            progress_task=self._device_login_task,
+        )
+
+    async def async_step_device_finish(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Resume the shared flow once the device token has been obtained.
+
+        Reuses the web flow's completion path: reauth updates the existing entry,
+        otherwise continue to workspace -> product -> instance selection.
+        """
+        return await self.async_oauth_create_entry(
+            {"auth_implementation": DOMAIN, "token": self._device_token}
+        )
+
+    async def async_step_device_failed(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Abort after a failed / expired / denied device authorization."""
+        return self.async_abort(reason="device_authorization_failed")
+
+    async def _async_request_device_code(self) -> dict[str, Any]:
+        """Start RFC 8628 device authorization; return device/user codes."""
+        session = async_get_clientsession(self.hass)
+        resp = await session.post(
+            f"{API_BASE_URL}{OAUTH2_DEVICE_AUTHORIZATION}",
+            data={"client_id": OAUTH2_CLIENT_ID, "scope": OAUTH2_SCOPES},
+        )
+        if resp.status != HTTPStatus.OK:
+            raise ApiError(resp.status, "device_authorization_failed")
+        data: dict[str, Any] = await resp.json()
+        _LOGGER.debug(
+            "Device authorization started; user_code=%s, verification_uri=%s",
+            data.get("user_code"),
+            data.get("verification_uri"),
+        )
+        return data
+
+    async def _async_poll_device_token(self) -> None:
+        """Poll the token endpoint until the user authorizes (or it fails).
+
+        Honors RFC 8628 polling: ``authorization_pending`` keeps waiting,
+        ``slow_down`` widens the interval, ``expired_token`` / ``access_denied``
+        (or any unexpected error) stop with an error.
+        """
+        session = async_get_clientsession(self.hass)
+        device_code: str = self._device_flow["device_code"]
+        interval: int = int(self._device_flow.get("interval", 5))
+        expires_in: int = int(self._device_flow.get("expires_in", 900))
+        deadline = time.monotonic() + expires_in
+
+        while time.monotonic() < deadline:
+            await asyncio.sleep(interval)
+            resp = await session.post(
+                f"{API_BASE_URL}{OAUTH2_TOKEN}",
+                data={
+                    "grant_type": DEVICE_CODE_GRANT_TYPE,
+                    "device_code": device_code,
+                    "client_id": OAUTH2_CLIENT_ID,
+                },
+            )
+            if resp.status == HTTPStatus.OK:
+                token: dict[str, Any] = await resp.json()
+                token["expires_at"] = time.time() + int(token["expires_in"])
+                self._device_token = token
+                return
+            try:
+                body = await resp.json()
+            except (ValueError, aiohttp.ContentTypeError):
+                body = {}
+            error = body.get("error")
+            if error == "authorization_pending":
+                continue
+            if error == "slow_down":
+                interval += 5
+                continue
+            # expired_token / access_denied / invalid_grant / unexpected -> stop
+            raise ApiError(resp.status, error or "device_token_failed")
+
+        raise ApiError(HTTPStatus.REQUEST_TIMEOUT, "expired_token")
 
     async def _async_api_request(self, method: str, path: str) -> Any:
         """Make an authenticated API request using the OAuth2 token."""

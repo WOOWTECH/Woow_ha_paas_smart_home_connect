@@ -9,9 +9,24 @@ class TunnelStatus(StrEnum):
     """Tunnel connection status values."""
 
     CONNECTED = "connected"
+    # tunnel 已在 Cloudflare 上被刪除（平台 #833 的第四格）。字面值必須與平台
+    # tunnel_status Selection 一致；語意與 DISCONNECTED 相反地「非重建不可」。
+    DELETED = "deleted"
     DISCONNECTED = "disconnected"
     ERROR = "error"
     UNKNOWN = "unknown"
+
+
+class McpIntegrationState(StrEnum):
+    """社群 ha_mcp_tools integration 的三態偵測值（見 #270 §5）.
+
+    純 HA 本地偵測結果，作為 MCP sensor 的 state 機器值。
+    """
+
+    NOT_INSTALLED = "not_installed"
+    INSTALLED_NOT_RUNNING = "installed_not_running"
+    RUNNING = "running"
+
 
 DOMAIN = "woow_paas_smart_home"
 
@@ -42,6 +57,11 @@ API_PATH_SA_ACCESS_STATUS = "/api/security-access/accesses/{access_id}/status"
 # OAuth2 endpoints
 OAUTH2_AUTHORIZE = "/oauth2/authorize"
 OAUTH2_TOKEN = "/oauth2/token"
+# OAuth2 Device Authorization Grant (RFC 8628) — used for HA Companion App
+# onboarding, where the redirect/window.open web flow can't complete in-app
+# (HA-wide limitation; see design doc §11). Browser onboarding keeps the web flow.
+OAUTH2_DEVICE_AUTHORIZATION = "/oauth2/device_authorization"
+DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 
 # OAuth2 public client (PKCE-only, no client_secret).
 # This client_id is registered as a public client on paas-platform and may be
@@ -78,6 +98,14 @@ CONF_TUNNEL_ID = "tunnel_id"
 # its hostname(s) come from the access detail routes[].hostname instead.
 CONF_SUBDOMAIN = "subdomain"
 
+# --- MCP（#270 Smart Home MCP）---
+# 社群 integration 的 HA domain（github.com/homeassistant-ai/ha-mcp-integration，
+# manifest.json domain 實測 == 此字串）。偵測三態時用它查 config entries / manifest。
+HA_MCP_DOMAIN = "ha_mcp_tools"
+# 平台 /status payload 的 mcp 訂閱字串：== 此值代表 400 檔（該顯示 MCP sensor），
+# ""／缺欄位代表 150 檔或無訂閱（不顯示）。語意上與 HA_MCP_DOMAIN 不同，恰好同值。
+MCP_SUBSCRIPTION_VALUE = "ha_mcp_tools"
+
 # --- Platforms ---
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -96,3 +124,20 @@ SERVICE_GET_STATUS = "get_status"
 
 # --- Coordinator ---
 UPDATE_INTERVAL = 30  # seconds
+
+# --- Custom OAuth2 callback (replaces my.home-assistant.io relay) ---
+# Cross-repo contract constant: paas side OAuthClient.HA_CALLBACK_PATH must match
+# this value byte-for-byte. Changing it is a cross-repo breaking change.
+WOOW_AUTH_CALLBACK_PATH = "/auth/external/woow/callback"
+
+# hass.data flag guarding idempotent callback-view registration.
+DATA_CALLBACK_VIEW_REGISTERED = "woow_paas_smart_home_callback_view_registered"
+
+# Callback 成功頁的自動返回行為（見設計 §4.5 decision #2）：
+#   "linger"  — 先顯示方向 A 品牌頁 + 倒數 CALLBACK_LINGER_SECONDS 秒，再 window.close()/導回
+#               （使用者看得到品牌頁；倒數畫面即同分頁/被擋時的 fallback 畫面）
+#   "instant" — 載入即 window.close()（最貼 HA 原生、最快；popup 情境幾乎看不到，
+#               同分頁/被擋時仍以倒數畫面 fallback 後導回）
+CALLBACK_AUTO_RETURN_MODE = "linger"
+# 倒數秒數：linger 模式的可見停留時間，也是 instant 模式的 fallback 倒數時間。
+CALLBACK_LINGER_SECONDS = 3

@@ -10,13 +10,12 @@ from __future__ import annotations
 import types
 from unittest.mock import MagicMock
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-
 from custom_components.woow_paas_smart_home.const import (
     CONF_PRODUCT_TYPE,
     DOMAIN,
     PRODUCT_SECURITY_ACCESS,
+    PRODUCT_SMART_HOME,
+    McpIntegrationState,
     TunnelStatus,
 )
 from custom_components.woow_paas_smart_home.coordinator import (
@@ -24,10 +23,16 @@ from custom_components.woow_paas_smart_home.coordinator import (
     TunnelStatusData,
 )
 from custom_components.woow_paas_smart_home.sensor import (
+    McpStatusSensor,
     RouteUrlSensor,
     _async_remove_legacy_url_entity,
+    _async_remove_mcp_entity,
     _async_sync_route_sensors,
+    _setup_mcp_status_sensor,
 )
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 
 def _data(routes: list[RouteInfo]) -> TunnelStatusData:
@@ -92,7 +97,7 @@ def test_sync_noop_when_data_none() -> None:
 
 
 def test_route_sensor_available_and_value() -> None:
-    """available has two independent kill switches; value tracks the route."""
+    """Available has two independent kill switches; value tracks the route."""
     r1 = RouteInfo(route_id="1", hostname="a.example.com")
     coord = _fake_coordinator([r1])
     sensor = RouteUrlSensor(coord, _fake_entry(), "1", "a")
@@ -147,3 +152,123 @@ async def test_legacy_url_entity_removed(hass: HomeAssistant) -> None:
     assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is None
     # Idempotent: a second call on an already-clean registry is a no-op.
     _async_remove_legacy_url_entity(hass, entry)
+
+
+# ---------------------------------------------------------------------------
+# MCP status sensor（#270 §5）——由 /status 的 mcp 訂閱字串驅動存在與否，
+# 由本地三態偵測結果（coordinator.data.mcp_integration_state）驅動顯示值。
+# ---------------------------------------------------------------------------
+
+
+def _mcp_data(mcp: str, state: McpIntegrationState | None) -> TunnelStatusData:
+    return TunnelStatusData(
+        status=TunnelStatus.CONNECTED,
+        subdomain_url="https://paas-sm-home",
+        mcp=mcp,
+        mcp_integration_state=state,
+    )
+
+
+def _mcp_coordinator(
+    mcp: str, state: McpIntegrationState | None
+) -> types.SimpleNamespace:
+    coord = types.SimpleNamespace()
+    coord.data = _mcp_data(mcp, state)
+    coord.last_update_success = True
+    coord.async_add_listener = MagicMock()
+    return coord
+
+
+def _mcp_entry() -> MagicMock:
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.data = {CONF_PRODUCT_TYPE: PRODUCT_SMART_HOME}
+    return entry
+
+
+def test_mcp_status_native_value() -> None:
+    """native_value 反映三態偵測結果；coordinator 尚無資料時回 None。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.INSTALLED_NOT_RUNNING)
+    sensor = McpStatusSensor(coord, _mcp_entry())
+
+    assert sensor.native_value == McpIntegrationState.INSTALLED_NOT_RUNNING
+
+    coord.data = None
+    assert sensor.native_value is None
+
+
+def test_mcp_status_options_and_unique_id() -> None:
+    """ENUM options 為三態機器值；unique_id 綁 entry。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    sensor = McpStatusSensor(coord, _mcp_entry())
+
+    assert sensor.unique_id == "test_entry_mcp_status"
+    assert sensor._attr_options == [
+        "not_installed",
+        "installed_not_running",
+        "running",
+    ]
+
+
+def test_mcp_reconcile_adds_when_subscribed() -> None:
+    """初次 setup 時 mcp=="ha_mcp_tools" → 建立一顆 McpStatusSensor 並掛 poll listener。"""
+    hass = MagicMock()
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    add = MagicMock()
+
+    _setup_mcp_status_sensor(hass, coord, _mcp_entry(), add)
+
+    assert add.call_count == 1
+    batch = add.call_args[0][0]
+    assert len(batch) == 1
+    assert isinstance(batch[0], McpStatusSensor)
+    coord.async_add_listener.assert_called_once()
+
+
+def test_mcp_reconcile_idempotent_no_double_add() -> None:
+    """訂閱狀態下重複 poll 不重複新增（比照 route sync 的冪等性）。"""
+    hass = MagicMock()
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    add = MagicMock()
+
+    _setup_mcp_status_sensor(hass, coord, _mcp_entry(), add)
+    assert add.call_count == 1
+
+    sync = coord.async_add_listener.call_args[0][0]
+    sync()
+    sync()
+    assert add.call_count == 1
+
+
+async def test_mcp_reconcile_removes_on_unsubscribe(hass: HomeAssistant) -> None:
+    """降頻/退訂：mcp 由 "ha_mcp_tools" 轉 "" → 從 registry 移除那顆 sensor（對稱移除）。"""
+    registry = er.async_get(hass)
+    entry = _mcp_entry()
+    unique_id = f"{entry.entry_id}_mcp_status"
+    registry.async_get_or_create("sensor", DOMAIN, unique_id)
+    assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is not None
+
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    add = MagicMock()
+    _setup_mcp_status_sensor(hass, coord, entry, add)
+    sync = coord.async_add_listener.call_args[0][0]
+
+    # 退訂 → 下一次 poll 的 _sync 應移除該 entity。
+    coord.data = _mcp_data("", None)
+    sync()
+
+    assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is None
+
+
+async def test_mcp_reconcile_noop_setup_when_unsubscribed(
+    hass: HomeAssistant,
+) -> None:
+    """未訂閱時 setup：不新增 sensor；對空 registry 的移除為 no-op（不拋錯）。"""
+    coord = _mcp_coordinator("", None)
+    add = MagicMock()
+
+    _setup_mcp_status_sensor(hass, coord, _mcp_entry(), add)
+
+    add.assert_not_called()
+    # 明確驗證移除路徑對缺席 entity 的冪等性。
+    _async_remove_mcp_entity(hass, _mcp_entry())

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 import logging
+import os
 
 import aiohttp
 
@@ -17,13 +18,46 @@ from .api_client import ApiError, AuthenticationError, WoowPaasApiClient
 from .cloudflared_manager import CloudflaredManager
 from .const import (
     DOMAIN,
+    HA_MCP_DOMAIN,
+    MCP_SUBSCRIPTION_VALUE,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
     UPDATE_INTERVAL,
+    McpIntegrationState,
     TunnelStatus,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def async_detect_ha_mcp_state(hass: HomeAssistant) -> McpIntegrationState:
+    """偵測社群 ha_mcp_tools integration 的三態（見 #270 §5）.
+
+    回傳 McpIntegrationState 三值之一。可安全於 coordinator 的 async context
+    直接 await：只讀 config entries（純記憶體）＋ 一次 executor 的 os.path.isfile，
+    不阻塞 event loop、也不 import ha_mcp_tools 的任何 Python 模組。
+
+    偵測順序（此順序刻意，見 §5 對抗式驗證 skeptic #1/#2 修正）：
+    1. 有任一「未停用且 LOADED」的 config entry → RUNNING。async_loaded_entries
+       已結構性排除 ignored/disabled、且只回 state==LOADED 者。
+    2. 否則以「manifest.json 是否在磁碟上」區分 INSTALLED_NOT_RUNNING 與
+       NOT_INSTALLED。刻意不用 async_get_integration/IntegrationNotFound——後者
+       會把「manifest 在磁碟但被 version/blocked/corrupt/陳舊快取拒絕」誤判成未安裝。
+       stale entry（HACS 反安裝只刪檔留 entry）因不在 async_loaded_entries 內，
+       會回落到此磁碟探測，得到正解 NOT_INSTALLED。
+    """
+    if hass.config_entries.async_loaded_entries(HA_MCP_DOMAIN):
+        return McpIntegrationState.RUNNING
+
+    manifest_path = hass.config.path(
+        "custom_components", HA_MCP_DOMAIN, "manifest.json"
+    )
+    installed = await hass.async_add_executor_job(os.path.isfile, manifest_path)
+    return (
+        McpIntegrationState.INSTALLED_NOT_RUNNING
+        if installed
+        else McpIntegrationState.NOT_INSTALLED
+    )
 
 
 @dataclass(frozen=True)
@@ -50,6 +84,10 @@ class TunnelStatusData:
     # Security-access-only fields (None/empty for smart home).
     state: str | None = None  # SA access state, e.g. active / active_no_route
     routes: tuple[RouteInfo, ...] = ()  # all SA routes (empty for smart home)
+    # --- MCP（Smart Home 專用；SA 恆為預設值，見 #270 §5）---
+    mcp: str = ""  # /status 的訂閱字串："ha_mcp_tools" 或 ""
+    # 三態偵測結果，僅在 mcp == "ha_mcp_tools"（有訂閱）時有值，否則 None。
+    mcp_integration_state: McpIntegrationState | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -105,6 +143,12 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         remote_status: str | None = None
         state: str | None = previous.state if previous else None
         routes: tuple[RouteInfo, ...] = previous.routes if previous else ()
+        # #270：mcp 訂閱字串 / 三態偵測結果同樣沿用 last-known，僅成功 poll 才覆寫，
+        # 避免 API 暫失被誤當退訂（會移除 sensor → 下輪恢復 → 存在性 flapping）。
+        mcp: str = previous.mcp if previous else ""
+        mcp_integration_state: McpIntegrationState | None = (
+            previous.mcp_integration_state if previous else None
+        )
         try:
             if is_sa:
                 data = await self._api_client.get_access_status(self._instance_id)
@@ -124,6 +168,8 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             else:
                 data = await self._api_client.get_home_status(self._instance_id)
                 remote_status = (data.get("tunnel_status") or "").lower()
+                # #270：僅 SH payload 帶 mcp（SA 的 to_dict 無此 key）；成功才覆寫。
+                mcp = data.get("mcp") or ""
         except AuthenticationError as err:
             raise ConfigEntryAuthFailed(
                 "Authentication failed while fetching tunnel status"
@@ -151,11 +197,28 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         # Merge local + remote status
         status = self._merge_status(local_running, remote_status)
 
+        # #270：三態偵測。僅 Smart Home 且有 MCP 訂閱時才跑（避開無訂閱 home 的
+        # executor 呼叫）。偵測與雲端 API 無關，故即使本輪 API 失敗（mcp 保留上一輪值）
+        # 仍會重算當前本地實況。全程包 try/except：偵測自身的意外例外不可讓整個
+        # update 失敗（否則 last_update_success=False → 所有 sensor 同時 unavailable）。
+        if not is_sa and mcp == MCP_SUBSCRIPTION_VALUE:
+            try:
+                mcp_integration_state = await async_detect_ha_mcp_state(self.hass)
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug(
+                    "ha_mcp_tools 三態偵測失敗，沿用上一輪狀態", exc_info=True
+                )
+        elif mcp != MCP_SUBSCRIPTION_VALUE:
+            # 無訂閱（含 SA、降頻退訂）→ 三態無意義。
+            mcp_integration_state = None
+
         return TunnelStatusData(
             status=status,
             subdomain_url=subdomain_url,
             state=state,
             routes=routes,
+            mcp=mcp,
+            mcp_integration_state=mcp_integration_state,
         )
 
     @staticmethod
@@ -174,10 +237,19 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         | stopped  | disconnected | disconnected   |
         | running  | API fail     | unknown        |
         | stopped  | API fail     | disconnected   |
+        | any      | deleted      | deleted        |
         """
         # API failure (remote_status is None)
         if remote_status is None:
             return TunnelStatus.UNKNOWN if local_running else TunnelStatus.DISCONNECTED
+
+        # 遠端說 tunnel 已被刪除 ⇒ 優先於本地行程狀態（平台 #833）。tunnel 在
+        # Cloudflare 上已不存在，本地 cloudflared 就算還活著也連不到任何東西，那個
+        # running 不是健康訊號、是該被清掉的殘留。若讓它落進下面的既有分支，會得到
+        # running -> error、stopped -> disconnected —— 兩者都與「tunnel 還在、只是
+        # 沒連上」撞成同一個值，使用者無從分辨「非重建不可」與「等連線恢復就好」。
+        if remote_status == TunnelStatus.DELETED:
+            return TunnelStatus.DELETED
 
         # Both sources available
         if local_running and remote_status == TunnelStatus.CONNECTED:
