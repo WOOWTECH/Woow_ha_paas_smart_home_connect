@@ -18,7 +18,10 @@ from .api_client import ApiError, AuthenticationError, WoowPaasApiClient
 from .cloudflared_manager import CloudflaredManager
 from .const import (
     DOMAIN,
+    HA_MCP_DATA_WEBHOOK_ID,
     HA_MCP_DOMAIN,
+    HA_MCP_OPT_ENABLE_WEBHOOK,
+    HA_WEBHOOK_PATH,
     MCP_SUBSCRIPTION_VALUE,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
@@ -60,6 +63,35 @@ async def async_detect_ha_mcp_state(hass: HomeAssistant) -> McpIntegrationState:
     )
 
 
+def async_get_ha_mcp_webhook_id(hass: HomeAssistant) -> str | None:
+    """取回 ha_mcp_tools 目前生效、且真的對外可達的 webhook id（否則 None）。
+
+    只有在「id 拿得到」**且**「該 id 對應的端點確實註冊了」兩件事同時成立時才回值——
+    回一個會 404 的 URL 比不回更糟，使用者會拿去貼進 MCP client 然後在別處查錯。
+    三道門，缺一不可：
+
+    1. 有 LOADED 的 ha_mcp_tools entry。用 ``async_loaded_entries`` 而非
+       ``async_entries``：entry 存在不等於 webhook 註冊了（disabled／setup 失敗／
+       HACS 反安裝只刪檔留 entry 都會留下 stale entry），而 webhook 是在
+       ``async_setup_entry`` 裡註冊的。這與 :func:`async_detect_ha_mcp_state`
+       判定 RUNNING 用的是同一個判準，兩顆 sensor 因此不會互相矛盾。
+    2. ``options["enable_webhook"]`` 不是 False（預設 True）。False＝local-only 模式，
+       ha_mcp_tools 明確不註冊 webhook（見 const 註解）。
+    3. ``data["webhook_id"]`` 有值。
+
+    純記憶體讀取（config entries），無 I/O，可在 event loop 直接呼叫。
+    多個 entry 時取第一個 loaded 的——ha_mcp_tools 是單例型 integration，
+    實務上不會有第二個；真有的話第一個就是 UI 顯示的那個。
+    """
+    for entry in hass.config_entries.async_loaded_entries(HA_MCP_DOMAIN):
+        if entry.options.get(HA_MCP_OPT_ENABLE_WEBHOOK, True) is False:
+            continue
+        webhook_id = entry.data.get(HA_MCP_DATA_WEBHOOK_ID)
+        if webhook_id:
+            return str(webhook_id)
+    return None
+
+
 @dataclass(frozen=True)
 class RouteInfo:
     """A single Security Access application route.
@@ -88,6 +120,22 @@ class TunnelStatusData:
     mcp: str = ""  # /status 的訂閱字串："ha_mcp_tools" 或 ""
     # 三態偵測結果，僅在 mcp == "ha_mcp_tools"（有訂閱）時有值，否則 None。
     mcp_integration_state: McpIntegrationState | None = None
+    # ha_mcp_tools 生效中的 webhook id；無訂閱／未 RUNNING／local-only 模式時為 None。
+    mcp_webhook_id: str | None = None
+
+    @property
+    def mcp_connect_url(self) -> str | None:
+        """MCP client 要填的遠端連線位址，None 代表現在沒有可用的。
+
+        刻意用 tunnel 的 ``subdomain_url`` 當 base，而不是 ha_mcp_tools 自己算的
+        external_url 或 HA 的 ``get_url()``：這顆 sensor 的意義是「透過**這個
+        PaaS Smart Home 訂閱**買到的那條對外路徑連 MCP」。tunnel 沒起來時
+        subdomain_url 為空字串 ⇒ 這裡回 None，而不是吐一個 ``/api/webhook/...``
+        的相對路徑出去。
+        """
+        if not self.subdomain_url or not self.mcp_webhook_id:
+            return None
+        return f"{self.subdomain_url}{HA_WEBHOOK_PATH}{self.mcp_webhook_id}"
 
     @property
     def is_connected(self) -> bool:
@@ -149,6 +197,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         mcp_integration_state: McpIntegrationState | None = (
             previous.mcp_integration_state if previous else None
         )
+        mcp_webhook_id: str | None = previous.mcp_webhook_id if previous else None
         try:
             if is_sa:
                 data = await self._api_client.get_access_status(self._instance_id)
@@ -204,13 +253,17 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         if not is_sa and mcp == MCP_SUBSCRIPTION_VALUE:
             try:
                 mcp_integration_state = await async_detect_ha_mcp_state(self.hass)
+                # connect URL 與三態同源、同一輪算，兩顆 sensor 才不會有一輪的偏差
+                # （例如狀態已 RUNNING 但 URL 還是上一輪的 None）。
+                mcp_webhook_id = async_get_ha_mcp_webhook_id(self.hass)
             except Exception:  # noqa: BLE001
                 _LOGGER.debug(
                     "ha_mcp_tools 三態偵測失敗，沿用上一輪狀態", exc_info=True
                 )
         elif mcp != MCP_SUBSCRIPTION_VALUE:
-            # 無訂閱（含 SA、降頻退訂）→ 三態無意義。
+            # 無訂閱（含 SA、降頻退訂）→ 三態與 connect URL 都無意義。
             mcp_integration_state = None
+            mcp_webhook_id = None
 
         return TunnelStatusData(
             status=status,
@@ -219,6 +272,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             routes=routes,
             mcp=mcp,
             mcp_integration_state=mcp_integration_state,
+            mcp_webhook_id=mcp_webhook_id,
         )
 
     @staticmethod

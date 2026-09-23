@@ -24,6 +24,7 @@ from custom_components.woow_paas_smart_home.coordinator import (
     RouteInfo,
     TunnelCoordinator,
     TunnelStatusData,
+    async_get_ha_mcp_webhook_id,
 )
 from custom_components.woow_paas_smart_home.sensor import TunnelStatusSensor
 import pytest
@@ -463,3 +464,68 @@ def test_legacy_merge_table_unchanged(
     沒有這張表，「把 deleted 修好」與「把兩種狀態一起弄壞」在測試上是同一個綠燈。
     """
     assert TunnelCoordinator._merge_status(running, remote) is expected
+
+
+# ---------------------------------------------------------------------------
+# async_get_ha_mcp_webhook_id — MCP connect URL 的三道門
+# ---------------------------------------------------------------------------
+
+
+def _mcp_entry_stub(
+    webhook_id: str | None = "mcp_" + "b" * 32,
+    enable_webhook: object = None,
+) -> types.SimpleNamespace:
+    """模擬一個 ha_mcp_tools 的 config entry（只需要 data / options 兩個屬性）。"""
+    options: dict[str, object] = {}
+    if enable_webhook is not None:
+        options["enable_webhook"] = enable_webhook
+    data: dict[str, object] = {}
+    if webhook_id is not None:
+        data["webhook_id"] = webhook_id
+    return types.SimpleNamespace(data=data, options=options)
+
+
+def _hass_with_loaded(entries: list[object]) -> types.SimpleNamespace:
+    hass = types.SimpleNamespace()
+    hass.config_entries = types.SimpleNamespace(
+        async_loaded_entries=lambda domain: entries
+    )
+    return hass
+
+
+def test_mcp_webhook_id_returns_effective_id() -> None:
+    """有 LOADED entry、webhook 未關、id 有值 → 回該 id。"""
+    hass = _hass_with_loaded([_mcp_entry_stub()])
+    assert async_get_ha_mcp_webhook_id(hass) == "mcp_" + "b" * 32
+
+
+def test_mcp_webhook_id_none_when_no_loaded_entry() -> None:
+    """沒有 LOADED entry（未安裝／停用／setup 失敗）→ None。"""
+    assert async_get_ha_mcp_webhook_id(_hass_with_loaded([])) is None
+
+
+def test_mcp_webhook_id_none_when_local_only() -> None:
+    """enable_webhook=False（local-only）→ 端點不存在，不能給 URL。"""
+    hass = _hass_with_loaded([_mcp_entry_stub(enable_webhook=False)])
+    assert async_get_ha_mcp_webhook_id(hass) is None
+
+
+def test_mcp_webhook_id_default_enabled_when_option_absent() -> None:
+    """options 沒有 enable_webhook 鍵時視為 True（與 ha_mcp_tools 的預設一致）。"""
+    hass = _hass_with_loaded([_mcp_entry_stub(enable_webhook=None)])
+    assert async_get_ha_mcp_webhook_id(hass) is not None
+
+
+def test_mcp_webhook_id_none_when_id_missing() -> None:
+    """entry 還沒寫入 webhook_id（bring-up 中途）→ None，不組半截 URL。"""
+    hass = _hass_with_loaded([_mcp_entry_stub(webhook_id=None)])
+    assert async_get_ha_mcp_webhook_id(hass) is None
+
+
+def test_mcp_webhook_id_skips_local_only_entry_and_takes_next() -> None:
+    """多個 entry 時跳過 local-only 的那個，取下一個可用的。"""
+    hass = _hass_with_loaded([
+        _mcp_entry_stub(webhook_id="mcp_skipme", enable_webhook=False),
+        _mcp_entry_stub(webhook_id="mcp_useme"),
+    ])
+    assert async_get_ha_mcp_webhook_id(hass) == "mcp_useme"

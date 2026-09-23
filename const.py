@@ -106,6 +106,25 @@ HA_MCP_DOMAIN = "ha_mcp_tools"
 # ""／缺欄位代表 150 檔或無訂閱（不顯示）。語意上與 HA_MCP_DOMAIN 不同，恰好同值。
 MCP_SUBSCRIPTION_VALUE = "ha_mcp_tools"
 
+# --- MCP connect URL（跨 component 契約；我們永遠不 import ha_mcp_tools）---
+# 下面兩個鍵是 ha_mcp_tools 自己 config entry 的欄位名，讀法與它 config_flow 顯示
+# "Remote connect URL" 時完全一致（ha_mcp_tools/config_flow.py，1.2.2 實測）：
+#
+#   entry.data["webhook_id"]         生效中的 webhook id，格式 "mcp_" + 32 hex。
+#       使用者若在選項裡填了 webhook_id_override，ha_mcp_tools 會在自己的 bring-up
+#       把它正規化寫回這個 data 鍵（embedded_entry.py），所以**讀 data 一定是最終值**，
+#       我們不需要、也不該自己再套一次 override。
+#   entry.options["enable_webhook"]  預設 True。False＝local-only 模式，webhook 端點
+#       根本不會註冊，這時給出 URL 會 404，所以要當作「沒有 URL」。
+#
+# 這是別人家的內部欄位名，升級時可能改。改了的症狀是 connect URL sensor 變 unknown
+# （不會壞掉其他 sensor），對照 ha_mcp_tools 的 const.py DATA_WEBHOOK_ID /
+# OPT_ENABLE_WEBHOOK 兩個常數即可修。
+HA_MCP_DATA_WEBHOOK_ID = "webhook_id"
+HA_MCP_OPT_ENABLE_WEBHOOK = "enable_webhook"
+# HA 內建 webhook component 的固定路徑前綴（homeassistant.components.webhook）。
+HA_WEBHOOK_PATH = "/api/webhook/"
+
 # --- Platforms ---
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 

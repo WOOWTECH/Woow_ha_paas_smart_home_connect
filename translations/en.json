@@ -83,6 +83,9 @@
           "installed_not_running": "Installed, not running",
           "running": "Running"
         }
+      },
+      "mcp_connect_url": {
+        "name": "MCP Connect URL"
       }
     }
   }

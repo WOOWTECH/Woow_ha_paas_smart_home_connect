@@ -62,7 +62,7 @@ async def async_setup_entry(
             TunnelUrlSensor(coordinator, entry),
         ])
         # #270：MCP sensor 依 /status 的 mcp 訂閱字串冪等 reconcile（僅 Smart Home）。
-        _setup_mcp_status_sensor(hass, coordinator, entry, async_add_entities)
+        _setup_mcp_sensors(hass, coordinator, entry, async_add_entities)
         return
 
     # Security Access: the single aggregate URL sensor (<= 0.2.0) is replaced by
@@ -141,7 +141,7 @@ class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
     時才存在。顯示值為 coordinator 每 poll 算好的本地三態偵測結果
     （``mcp_integration_state``）——未安裝 / 已安裝未啟動 / 運作中。
 
-    存在與否由 :func:`_setup_mcp_status_sensor` 依訂閱字串冪等 reconcile；顯示值
+    存在與否由 :func:`_setup_mcp_sensors` 依訂閱字串冪等 reconcile；顯示值
     的刷新沿用 CoordinatorEntity：每次 30s coordinator update 自動 write state。
     """
 
@@ -169,14 +169,56 @@ class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
         return data.mcp_integration_state
 
 
+class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
+    """MCP client 要填的遠端連線位址（tunnel URL + ha_mcp_tools 的 webhook 路徑）。
+
+    與 :class:`McpStatusSensor` 成對存在：狀態那顆回答「MCP 有沒有在跑」，這顆回答
+    「那要連去哪」。生命週期完全綁在一起（同一個訂閱閘門、同一輪 reconcile），因為
+    對使用者而言少了任一顆，另一顆都不完整。
+
+    值為 ``None``（UI 顯示 unknown）而非讓 entity 消失，原因有二：
+    tunnel 斷線、ha_mcp_tools 沒跑、local-only 模式這三種「暫時沒有 URL」都會復原，
+    entity 消失會連帶丟掉歷史與 dashboard 參照；而且旁邊那顆狀態 sensor 已經說明了
+    是哪一種原因，這裡不需要再自己解釋一次。
+
+    ⚠️ 這個值本身就是**憑證**——URL 裡的 webhook id 就是進入 MCP server 的鑰匙
+    （ha_mcp_tools 預設 ``webhook_auth=none``，密鑰即網址）。它會進 recorder 歷史、
+    也會出現在任何顯示它的 dashboard。這是刻意的取捨：使用者就是需要把它複製出去貼給
+    MCP client，跟 ha_mcp_tools 自己在設定畫面顯示 "Remote connect URL" 是同一個決定。
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:transit-connection-variant"
+    _attr_has_entity_name = True
+    _attr_translation_key = "mcp_connect_url"
+
+    def __init__(
+        self, coordinator: TunnelCoordinator, entry: WoowConfigEntry
+    ) -> None:
+        """Initialize the MCP connect URL sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_mcp_connect_url"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the MCP connect URL, or None when there is not a usable one."""
+        data = self.coordinator.data
+        if data is None:
+            return None
+        return data.mcp_connect_url
+
+
 @callback
-def _setup_mcp_status_sensor(
+def _setup_mcp_sensors(
     hass: HomeAssistant,
     coordinator: TunnelCoordinator,
     entry: WoowConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """依 /status 的 mcp 訂閱字串，每 poll 冪等地建立／移除 McpStatusSensor.
+    """依 /status 的 mcp 訂閱字串，每 poll 冪等地建立／移除兩顆 MCP sensor.
+
+    兩顆＝McpStatusSensor（狀態）＋ McpConnectUrlSensor（連線位址），同進同出。
 
     ``mcp == "ha_mcp_tools"``（400 檔）→ 確保存在一顆 sensor。
     ``mcp == ""``（150 檔／退訂／降頻）→ 確保不存在（含先前建過的，從 registry 移除）。
@@ -194,35 +236,51 @@ def _setup_mcp_status_sensor(
         subscribed = data.mcp == MCP_SUBSCRIPTION_VALUE
         if subscribed and not present["value"]:
             present["value"] = True
-            async_add_entities([McpStatusSensor(coordinator, entry)])
+            async_add_entities(_mcp_entities(coordinator, entry))
         elif not subscribed and present["value"]:
             present["value"] = False
-            _async_remove_mcp_entity(hass, entry)
+            _async_remove_mcp_entities(hass, entry)
 
     # 初次收斂：訂閱中就建；未訂閱則清掉可能殘留的 registry entity（no-op if absent）——
     # 對稱於 _async_remove_legacy_url_entity，保證每次 setup 都收斂到期望狀態。
     data = coordinator.data
     if data is not None and data.mcp == MCP_SUBSCRIPTION_VALUE:
         present["value"] = True
-        async_add_entities([McpStatusSensor(coordinator, entry)])
+        async_add_entities(_mcp_entities(coordinator, entry))
     else:
-        _async_remove_mcp_entity(hass, entry)
+        _async_remove_mcp_entities(hass, entry)
 
     entry.async_on_unload(coordinator.async_add_listener(_sync))
 
 
-def _async_remove_mcp_entity(hass: HomeAssistant, entry: WoowConfigEntry) -> None:
-    """從 entity registry 移除 MCP sensor（冪等，缺席時 no-op）.
+def _mcp_entities(
+    coordinator: TunnelCoordinator, entry: WoowConfigEntry
+) -> list[SensorEntity]:
+    """訂閱成立時要存在的整組 MCP sensor（新增與移除兩邊共用這份清單）."""
+    return [
+        McpStatusSensor(coordinator, entry),
+        McpConnectUrlSensor(coordinator, entry),
+    ]
+
+
+# 移除時要掃的 unique_id 後綴，與 _mcp_entities 的組成一一對應。加新的 MCP sensor
+# 記得兩邊都加，否則退訂後會留下孤兒 entity。
+_MCP_UNIQUE_ID_SUFFIXES = ("_mcp_status", "_mcp_connect_url")
+
+
+def _async_remove_mcp_entities(hass: HomeAssistant, entry: WoowConfigEntry) -> None:
+    """從 entity registry 移除整組 MCP sensor（冪等，缺席時 no-op）.
 
     沿用 :func:`_async_remove_legacy_url_entity` 的對稱移除範式：
     ``registry.async_remove`` 會連帶讓 live entity 下線。
     """
     registry = er.async_get(hass)
-    entity_id = registry.async_get_entity_id(
-        Platform.SENSOR, DOMAIN, f"{entry.entry_id}_mcp_status"
-    )
-    if entity_id is not None:
-        registry.async_remove(entity_id)
+    for suffix in _MCP_UNIQUE_ID_SUFFIXES:
+        entity_id = registry.async_get_entity_id(
+            Platform.SENSOR, DOMAIN, f"{entry.entry_id}{suffix}"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
 
 
 class TunnelStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
