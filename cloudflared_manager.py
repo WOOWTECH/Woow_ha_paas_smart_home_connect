@@ -10,6 +10,7 @@ import platform
 import shutil
 import signal
 import tarfile
+from typing import Any
 
 import aiohttp
 
@@ -23,6 +24,24 @@ _DEFAULT_INSTALL_DIR = ".woow_paas_smart_home"
 
 # Binary filename after extraction / download
 _BINARY_NAME = "cloudflared"
+
+# 下載 cloudflared（linux-amd64 約 39MB）**必須自帶 timeout**。
+# HA 的共用 client session 帶著它自己的預設 timeout，對這種大檔案不夠用：實機上
+# 這裡曾經在 `resp.read()` 讀到一半被計時器掐掉（aiohttp 的 TimerContext 會把
+# CancelledError 轉成 TimeoutError），結果是安裝目錄建好了、二進位卻沒落地，
+# 隧道從此起不來。
+#
+# **刻意不設 total**：檔案大小固定但線路速度不固定。實機量到對 GitHub releases
+# 只有約 46 KB/s（39MB 要走十幾分鐘），任何「合理」的 total 都會在慢線路上變成
+# 新的假超時——而那正是本來要修的病。改由 sock_read 把關：只要 60 秒內有收到下一個
+# 區塊就繼續，真的斷線才會失敗。這樣慢歸慢會完成，斷線也不會無限掛著。
+_DOWNLOAD_TIMEOUT = aiohttp.ClientTimeout(
+    total=None, sock_connect=30, sock_read=60
+)
+
+# 邊收邊寫的區塊大小。不用 `resp.read()` 一次讀進記憶體：39MB 對 Pi 這類機器是
+# 不必要的壓力，而且整包讀完才寫檔會讓失敗集中在最後一刻。
+_DOWNLOAD_CHUNK = 256 * 1024
 
 # Platform -> download URL mapping
 _DOWNLOAD_URL_MAP: dict[tuple[str, str], str] = {
@@ -136,25 +155,51 @@ class CloudflaredManager:
     async def _download_binary(self, url: str) -> None:
         """Download a raw binary file (Linux)."""
         session = async_get_clientsession(self.hass)
-        async with session.get(url, allow_redirects=True) as resp:
+        async with session.get(
+            url, allow_redirects=True, timeout=_DOWNLOAD_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
-            data = await resp.read()
+            await self._stream_to_file(resp, self._binary_path)
 
-        await self.hass.async_add_executor_job(
-            self._binary_path.write_bytes, data
-        )
+    async def _stream_to_file(
+        self, resp: aiohttp.ClientResponse, dest: Path
+    ) -> None:
+        """把回應內容邊收邊寫到 ``dest``，全部寫完才就位。
+
+        先寫 ``dest.part`` 再 rename 到 ``dest``——rename 在同一個檔案系統上是原子的。
+        這一步是必要的，不是潔癖：``ensure_binary()`` 只用 ``is_file()`` 判斷二進位
+        在不在，所以一個下載到一半就中斷的檔案會被當成「已安裝」，之後每次啟動都拿
+        那個壞檔去執行、而且永遠不會重新下載。寫暫存檔則是要嘛沒有、要嘛完整。
+        """
+        part = dest.with_name(dest.name + ".part")
+
+        def _write(handle: Any, chunk: bytes) -> None:
+            handle.write(chunk)
+
+        handle = await self.hass.async_add_executor_job(part.open, "wb")
+        try:
+            async for chunk in resp.content.iter_chunked(_DOWNLOAD_CHUNK):
+                await self.hass.async_add_executor_job(_write, handle, chunk)
+        except BaseException:
+            # 包含 CancelledError：HA 關機或 config entry 卸載會取消這個背景工作，
+            # 不清掉的話下次啟動會看到一個半截的 .part 檔留在那裡。
+            await self.hass.async_add_executor_job(handle.close)
+            await self.hass.async_add_executor_job(part.unlink, True)
+            raise
+        await self.hass.async_add_executor_job(handle.close)
+        await self.hass.async_add_executor_job(part.replace, dest)
 
     async def _download_and_extract_tgz(self, url: str) -> None:
         """Download a .tgz archive and extract the binary (macOS)."""
         tgz_path = self._install_dir / "cloudflared.tgz"
 
-        # Download archive
+        # Download archive（同 _download_binary：自帶 timeout + 串流 + 原子搬移）
         session = async_get_clientsession(self.hass)
-        async with session.get(url, allow_redirects=True) as resp:
+        async with session.get(
+            url, allow_redirects=True, timeout=_DOWNLOAD_TIMEOUT
+        ) as resp:
             resp.raise_for_status()
-            data = await resp.read()
-
-        await self.hass.async_add_executor_job(tgz_path.write_bytes, data)
+            await self._stream_to_file(resp, tgz_path)
 
         # Extract and clean up in executor
         def _extract_and_cleanup() -> None:
