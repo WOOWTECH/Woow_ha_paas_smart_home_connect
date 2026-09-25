@@ -45,8 +45,14 @@ from .const import (
 )
 from .coordinator import TunnelCoordinator
 from .oauth2 import create_implementation
+from .oauth_callback_view import async_register_woow_callback_view
 
 _LOGGER = logging.getLogger(__name__)
+
+# 隧道 bring-up 的重試退避（秒）。起點 30 秒讓「剛開機、網路還沒好」的常見情況很快
+# 就補上；上限 10 分鐘讓長時間斷線時不會洗版，又保證網路回來後十分鐘內一定接上。
+_TUNNEL_RETRY_INITIAL = 30
+_TUNNEL_RETRY_MAX = 600
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -120,6 +126,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     config_entry_oauth2_flow.async_register_implementation(
         hass, DOMAIN, create_implementation(hass)
     )
+    async_register_woow_callback_view(hass)
 
     async def _handle_start_tunnel(call: ServiceCall) -> None:
         """Handle start_tunnel service call."""
@@ -192,6 +199,79 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+async def _async_start_tunnel_with_retry(
+    entry: WoowConfigEntry,
+    tunnel_manager: CloudflaredManager,
+    product_type: str,
+    instance_id: int | str,
+) -> None:
+    """把隧道拉起來，失敗就退避重試，直到成功（或工作被取消）。
+
+    **必須重試，不能失敗一次就放棄。** 這條路徑上每一步都可能因為「網路現在不好」
+    而失敗，而那是會自己好的：實機遇過住家線路只有 4 KB/s，39MB 的 cloudflared
+    下載中途 60 秒收不到資料而中斷。舊版在這裡記一行 error 就 ``return``，結果是
+    整合永久半殘——sensor 照常輪詢（所以看起來「有在動」），但隧道永遠不會起來，
+    而且**連重開 HA 都不會自癒**（重啟後同樣跑這一次、同樣失敗），使用者只能自己
+    去 reload 整合，卻沒有任何線索告訴他該這麼做。
+
+    退避從 30 秒倍增到 10 分鐘為止。不設重試上限：網路可能幾小時後才恢復，而放棄
+    的代價（永久壞掉且無提示）遠大於每 10 分鐘試一次的成本。
+
+    抽成模組層函式（而非留在 ``async_setup_entry`` 的閉包裡）是為了可測試：
+    一個帶無限迴圈的閉包沒辦法在不架整個 config entry 的情況下驗證。
+    """
+    delay = _TUNNEL_RETRY_INITIAL
+    attempt = 0
+    await asyncio.sleep(1)  # let HA finish startup
+
+    while True:
+        attempt += 1
+        try:
+            # 缺 token 是設定問題不是網路問題，重試永遠不會好——直接放棄，並且講清楚
+            # 要怎麼修，不要讓它混在網路重試裡被稀釋掉。
+            tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
+            if not tunnel_token:
+                _LOGGER.error(
+                    "No tunnel token stored for %s %s; the tunnel cannot start. "
+                    "Remove and re-add the integration to fetch one.",
+                    product_type,
+                    instance_id,
+                )
+                return
+
+            if await tunnel_manager.ensure_binary() and await (
+                tunnel_manager.start_tunnel(tunnel_token)
+            ):
+                if attempt > 1:
+                    _LOGGER.info(
+                        "cloudflared tunnel for %s %s started on attempt %s",
+                        product_type,
+                        instance_id,
+                        attempt,
+                    )
+                return
+            reason = "cloudflared binary unavailable or tunnel failed to start"
+        except asyncio.CancelledError:
+            # HA 關機或卸載 config entry 會取消這個工作——那是正常結束，不是失敗，
+            # 不可以吞掉後繼續重試（會攔住 HA 關機）。
+            raise
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Tunnel bring-up attempt %s raised", attempt, exc_info=True)
+            reason = str(err) or type(err).__name__
+
+        _LOGGER.warning(
+            "Tunnel bring-up for %s %s failed (attempt %s): %s. "
+            "Retrying in %s seconds.",
+            product_type,
+            instance_id,
+            attempt,
+            reason,
+            delay,
+        )
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _TUNNEL_RETRY_MAX)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool:
     """Set up Woow PaaS Smart Home from a config entry."""
     implementation = await async_get_config_entry_implementation(hass, entry)
@@ -253,35 +333,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
     )
 
     # Start tunnel in background (non-blocking)
-    async def _start_tunnel_background() -> None:
-        """Download cloudflared binary and start tunnel in background."""
-        try:
-            await asyncio.sleep(1)  # let HA finish startup
-            if not await tunnel_manager.ensure_binary():
-                _LOGGER.error("Failed to download cloudflared binary in background")
-                return
-            tunnel_token = entry.data.get(CONF_TUNNEL_TOKEN)
-            if not tunnel_token:
-                _LOGGER.error(
-                    "No tunnel token available for %s %s; tunnel will not start",
-                    product_type,
-                    instance_id,
-                )
-                return
-            if not await tunnel_manager.start_tunnel(tunnel_token):
-                _LOGGER.error(
-                    "Failed to start cloudflared tunnel for %s %s in background",
-                    product_type,
-                    instance_id,
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            _LOGGER.exception("Failed to start tunnel in background")
-
     entry.async_create_background_task(
         hass,
-        _start_tunnel_background(),
+        _async_start_tunnel_with_retry(
+            entry, tunnel_manager, product_type, instance_id
+        ),
         f"woow_tunnel_start_{entry.entry_id}",
     )
 

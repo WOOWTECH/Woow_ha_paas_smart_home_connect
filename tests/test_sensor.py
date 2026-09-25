@@ -10,13 +10,12 @@ from __future__ import annotations
 import types
 from unittest.mock import MagicMock
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-
 from custom_components.woow_paas_smart_home.const import (
     CONF_PRODUCT_TYPE,
     DOMAIN,
     PRODUCT_SECURITY_ACCESS,
+    PRODUCT_SMART_HOME,
+    McpIntegrationState,
     TunnelStatus,
 )
 from custom_components.woow_paas_smart_home.coordinator import (
@@ -24,10 +23,17 @@ from custom_components.woow_paas_smart_home.coordinator import (
     TunnelStatusData,
 )
 from custom_components.woow_paas_smart_home.sensor import (
+    McpConnectUrlSensor,
+    McpStatusSensor,
     RouteUrlSensor,
     _async_remove_legacy_url_entity,
+    _async_remove_mcp_entities,
     _async_sync_route_sensors,
+    _setup_mcp_sensors,
 )
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 
 def _data(routes: list[RouteInfo]) -> TunnelStatusData:
@@ -92,7 +98,7 @@ def test_sync_noop_when_data_none() -> None:
 
 
 def test_route_sensor_available_and_value() -> None:
-    """available has two independent kill switches; value tracks the route."""
+    """Available has two independent kill switches; value tracks the route."""
     r1 = RouteInfo(route_id="1", hostname="a.example.com")
     coord = _fake_coordinator([r1])
     sensor = RouteUrlSensor(coord, _fake_entry(), "1", "a")
@@ -147,3 +153,226 @@ async def test_legacy_url_entity_removed(hass: HomeAssistant) -> None:
     assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is None
     # Idempotent: a second call on an already-clean registry is a no-op.
     _async_remove_legacy_url_entity(hass, entry)
+
+
+# ---------------------------------------------------------------------------
+# MCP status sensor（#270 §5）——由 /status 的 mcp 訂閱字串驅動存在與否，
+# 由本地三態偵測結果（coordinator.data.mcp_integration_state）驅動顯示值。
+# ---------------------------------------------------------------------------
+
+
+def _mcp_data(
+    mcp: str,
+    state: McpIntegrationState | None,
+    webhook_id: str | None = "mcp_" + "a" * 32,
+    subdomain_url: str = "https://paas-sm-home",
+) -> TunnelStatusData:
+    return TunnelStatusData(
+        status=TunnelStatus.CONNECTED,
+        subdomain_url=subdomain_url,
+        mcp=mcp,
+        mcp_integration_state=state,
+        mcp_webhook_id=webhook_id,
+    )
+
+
+def _mcp_coordinator(
+    mcp: str,
+    state: McpIntegrationState | None,
+    webhook_id: str | None = "mcp_" + "a" * 32,
+    subdomain_url: str = "https://paas-sm-home",
+) -> types.SimpleNamespace:
+    coord = types.SimpleNamespace()
+    coord.data = _mcp_data(mcp, state, webhook_id, subdomain_url)
+    coord.last_update_success = True
+    coord.async_add_listener = MagicMock()
+    return coord
+
+
+def _mcp_entry() -> MagicMock:
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.data = {CONF_PRODUCT_TYPE: PRODUCT_SMART_HOME}
+    return entry
+
+
+def test_mcp_status_native_value() -> None:
+    """native_value 反映三態偵測結果；coordinator 尚無資料時回 None。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.INSTALLED_NOT_RUNNING)
+    sensor = McpStatusSensor(coord, _mcp_entry())
+
+    assert sensor.native_value == McpIntegrationState.INSTALLED_NOT_RUNNING
+
+    coord.data = None
+    assert sensor.native_value is None
+
+
+def test_mcp_status_options_and_unique_id() -> None:
+    """ENUM options 為三態機器值；unique_id 綁 entry。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    sensor = McpStatusSensor(coord, _mcp_entry())
+
+    assert sensor.unique_id == "test_entry_mcp_status"
+    assert sensor._attr_options == [
+        "not_installed",
+        "installed_not_running",
+        "running",
+    ]
+
+
+def test_mcp_reconcile_adds_when_subscribed() -> None:
+    """初次 setup 時 mcp=="ha_mcp_tools" → 一次建立狀態＋連線位址兩顆，並掛 poll listener。"""
+    hass = MagicMock()
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    add = MagicMock()
+
+    _setup_mcp_sensors(hass, coord, _mcp_entry(), add)
+
+    assert add.call_count == 1
+    batch = add.call_args[0][0]
+    assert [type(e) for e in batch] == [McpStatusSensor, McpConnectUrlSensor]
+    coord.async_add_listener.assert_called_once()
+
+
+def test_mcp_reconcile_idempotent_no_double_add() -> None:
+    """訂閱狀態下重複 poll 不重複新增（比照 route sync 的冪等性）。"""
+    hass = MagicMock()
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    add = MagicMock()
+
+    _setup_mcp_sensors(hass, coord, _mcp_entry(), add)
+    assert add.call_count == 1
+
+    sync = coord.async_add_listener.call_args[0][0]
+    sync()
+    sync()
+    assert add.call_count == 1
+
+
+async def test_mcp_reconcile_removes_on_unsubscribe(hass: HomeAssistant) -> None:
+    """降頻/退訂：mcp 由 "ha_mcp_tools" 轉 "" → 從 registry 移除那顆 sensor（對稱移除）。"""
+    registry = er.async_get(hass)
+    entry = _mcp_entry()
+    unique_ids = [
+        f"{entry.entry_id}_mcp_status",
+        f"{entry.entry_id}_mcp_connect_url",
+    ]
+    for unique_id in unique_ids:
+        registry.async_get_or_create("sensor", DOMAIN, unique_id)
+        assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is not None
+
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    add = MagicMock()
+    _setup_mcp_sensors(hass, coord, entry, add)
+    sync = coord.async_add_listener.call_args[0][0]
+
+    # 退訂 → 下一次 poll 的 _sync 應移除整組 entity（不能只清掉狀態那顆）。
+    coord.data = _mcp_data("", None, webhook_id=None)
+    sync()
+
+    for unique_id in unique_ids:
+        assert registry.async_get_entity_id("sensor", DOMAIN, unique_id) is None
+
+
+async def test_mcp_reconcile_noop_setup_when_unsubscribed(
+    hass: HomeAssistant,
+) -> None:
+    """未訂閱時 setup：不新增 sensor；對空 registry 的移除為 no-op（不拋錯）。"""
+    coord = _mcp_coordinator("", None)
+    add = MagicMock()
+
+    _setup_mcp_sensors(hass, coord, _mcp_entry(), add)
+
+    add.assert_not_called()
+    # 明確驗證移除路徑對缺席 entity 的冪等性。
+    _async_remove_mcp_entities(hass, _mcp_entry())
+
+
+# ---------------------------------------------------------------------------
+# MCP connect URL sensor
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_connect_url_state_is_the_full_url() -> None:
+    """state 就是完整網址 = tunnel URL + /api/webhook/{webhook_id}；無資料時回 None。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    sensor = McpConnectUrlSensor(coord, _mcp_entry())
+
+    assert sensor.native_value == (
+        "https://paas-sm-home/api/webhook/mcp_" + "a" * 32
+    )
+
+    coord.data = None
+    assert sensor.native_value is None
+
+
+def test_mcp_connect_url_attributes_expose_parts() -> None:
+    """屬性攤出組成部分（完整網址本身是 state，不重複放屬性）。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    attrs = McpConnectUrlSensor(coord, _mcp_entry()).extra_state_attributes
+
+    assert attrs == {
+        "webhook_id": "mcp_" + "a" * 32,
+        "base_url": "https://paas-sm-home",
+    }
+
+
+def test_mcp_connect_url_state_and_attributes_agree_on_absence() -> None:
+    """沒有可用位址時 state 與屬性一起消失，不會一個有值一個沒有。"""
+    for coord in (
+        _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING, webhook_id=None),
+        _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING, subdomain_url=""),
+    ):
+        sensor = McpConnectUrlSensor(coord, _mcp_entry())
+        assert sensor.native_value is None
+        assert sensor.extra_state_attributes is None
+
+
+def test_mcp_connect_url_unique_id() -> None:
+    """unique_id 綁 entry，且與狀態那顆不撞。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    sensor = McpConnectUrlSensor(coord, _mcp_entry())
+
+    assert sensor.unique_id == "test_entry_mcp_connect_url"
+    assert sensor.unique_id != McpStatusSensor(coord, _mcp_entry()).unique_id
+
+
+def test_mcp_connect_url_none_without_webhook_id() -> None:
+    """ha_mcp_tools 沒跑／local-only 模式（webhook_id 為 None）→ 不吐值。"""
+    coord = _mcp_coordinator(
+        "ha_mcp_tools", McpIntegrationState.INSTALLED_NOT_RUNNING, webhook_id=None
+    )
+    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value is None
+
+
+def test_mcp_connect_url_none_without_tunnel_url() -> None:
+    """tunnel 還沒起來（subdomain_url 為空）→ 不吐半截路徑，回 None。"""
+    coord = _mcp_coordinator(
+        "ha_mcp_tools", McpIntegrationState.RUNNING, subdomain_url=""
+    )
+    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value is None
+
+
+def test_mcp_connect_url_has_no_double_slash() -> None:
+    """subdomain_url 不帶尾斜線、路徑常數帶前斜線 → 接起來剛好一個斜線。"""
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    url = McpConnectUrlSensor(coord, _mcp_entry()).native_value
+
+    assert url is not None
+    assert "//api/webhook/" not in url
+    assert url.count("/api/webhook/") == 1
+
+
+def test_mcp_connect_url_is_not_an_enum_sensor() -> None:
+    """守衛：這顆不可以再被改成 ENUM／短標籤。
+
+    曾經為了讓裝置頁那一列的名稱完整顯示，把 state 改成 ``available``（顯示
+    "Open to copy"），結果使用者在 UI 上完全拿不到網址——這個 HA 版本的 more-info
+    沒有屬性區，屬性等於隱形。決議是**完整網址可見性優先**。這條測試釘住那個決議。
+    """
+    coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
+    sensor = McpConnectUrlSensor(coord, _mcp_entry())
+
+    assert sensor.device_class is None
+    assert sensor.options is None
+    assert sensor.native_value.startswith("https://")
