@@ -20,7 +20,12 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
     async_oauth2_request,
 )
 
-from .api_client import ApiError, AuthenticationError
+from .api_client import (
+    ApiError,
+    AuthenticationError,
+    InsufficientRoleError,
+    api_error_for,
+)
 from .const import (
     API_BASE_URL,
     API_PATH_HOME_TUNNEL_TOKEN,
@@ -39,6 +44,7 @@ from .const import (
     DEVICE_CODE_GRANT_TYPE,
     DOMAIN,
     ERR_CANNOT_CONNECT,
+    ERR_INSUFFICIENT_ROLE,
     ERR_INVALID_AUTH,
     ERR_NO_ACCESSES,
     ERR_NO_HOMES,
@@ -302,21 +308,19 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             return await resp.json()
 
         # Extract error detail from response body
+        error_code = ""
         try:
             body = await resp.json()
-            detail = (
-                body.get("detail", body.get("error", ""))
-                if isinstance(body, dict)
-                else ""
-            )
+            if isinstance(body, dict):
+                error_code = body.get("error", "")
+                detail = body.get("detail", error_code)
+            else:
+                detail = ""
         except (ValueError, aiohttp.ContentTypeError):
             detail = await resp.text()
 
         message = f"{resp.status} {detail}" if detail else str(resp.status)
-
-        if resp.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
-            raise AuthenticationError(resp.status, message)
-        raise ApiError(resp.status, message)
+        raise api_error_for(resp.status, error_code, message)
 
     async def async_step_select_workspace(
         self, user_input: dict[str, Any] | None = None
@@ -572,6 +576,20 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 tunnel_data.get("tunnel_id"),
                 tunnel_data.get("subdomain"),
             )
+        except InsufficientRoleError:
+            # 成員看得到清單，但 tunnel token 只給 owner／admin；重新授權修不好。
+            _LOGGER.warning(
+                "User is not an owner/admin of workspace %s; cannot fetch the "
+                "tunnel token for %s %s",
+                self._selected_workspace_id,
+                product_type,
+                instance_id,
+            )
+            return self.async_show_form(
+                step_id=error_step,
+                data_schema=vol.Schema({}),
+                errors={"base": ERR_INSUFFICIENT_ROLE},
+            )
         except AuthenticationError:
             _LOGGER.warning("Authentication failed while fetching tunnel token")
             return self.async_show_form(
@@ -609,4 +627,10 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not is_sa:
             data[CONF_SUBDOMAIN] = tunnel_data["subdomain"]
 
-        return self.async_create_entry(title=instance_name, data=data)
+        # strings.json 的 create_entry.default 是 "Successfully connected to {name}"；
+        # 不帶 placeholder 時 HA 前端的 formatjs 會把成功訊息換成 MISSING_VALUE 錯誤。
+        return self.async_create_entry(
+            title=instance_name,
+            data=data,
+            description_placeholders={"name": instance_name},
+        )

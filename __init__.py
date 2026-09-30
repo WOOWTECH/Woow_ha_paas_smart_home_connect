@@ -24,7 +24,12 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
 )
 from homeassistant.helpers.typing import ConfigType
 
-from .api_client import ApiError, AuthenticationError, WoowPaasApiClient
+from .api_client import (
+    ApiError,
+    AuthenticationError,
+    InsufficientRoleError,
+    WoowPaasApiClient,
+)
 from .cloudflared_manager import CloudflaredManager
 from .const import (
     API_BASE_URL,
@@ -303,6 +308,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
             }
         hass.config_entries.async_update_entry(entry, data=new_data)
         _LOGGER.debug("Refreshed tunnel token for %s %s", product_type, instance_id)
+    except InsufficientRoleError:
+        # 設定這個 entry 的人之後不再是 owner／admin（例如被降級）。平台不再交
+        # 新 token，但重新授權修不好角色——觸發 reauth 只會讓 HA 卡在一個完成不了
+        # 的流程、隧道也起不來。沿用已存的 token（平台端本來就無法撤回已交出的
+        # token），並記下原因。
+        _LOGGER.warning(
+            "Not an owner/admin of the workspace for %s %s anymore; the platform "
+            "no longer hands out its tunnel token. Using the cached token",
+            product_type,
+            instance_id,
+        )
     except AuthenticationError as err:
         raise ConfigEntryAuthFailed(
             "Authentication failed during tunnel token refresh"

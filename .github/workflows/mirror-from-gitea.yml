@@ -1,0 +1,47 @@
+# GitHub（WOOWTECH/Woow_ha_paas_smart_home_connect）是 Gitea
+# ha-components/woow_paas_smart_home 的唯讀鏡像：每小時把 Gitea main 與 tags
+# fast-forward 過來，兩邊指向同一個 commit。
+#
+# * 只做 fast-forward：GitHub main 若有 Gitea 沒有的 commit 就報錯停下，
+#   不會覆蓋——變更請改送 Gitea PR。
+# * Gitea 也會讀 .github/workflows，所以 job 限定只在 github.com 執行。
+# * GITHUB_TOKEN 不能推「改到 .github/workflows」的 commit；Gitea 改了這個
+#   檔案時同步會失敗，要有 workflow 權限的人手動推一次。
+name: mirror-from-gitea
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mirror-from-gitea
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fast-forward main and tags from Gitea
+        env:
+          UPSTREAM: https://git-prod.woowtech.io/ha-components/woow_paas_smart_home.git
+        run: |
+          git fetch --no-tags "$UPSTREAM" "+refs/heads/main:refs/remotes/gitea/main"
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" = "$(git rev-parse gitea/main)" ]; then
+            echo "Already in sync at $(git rev-parse --short gitea/main)"
+          elif git merge-base --is-ancestor origin/main gitea/main; then
+            git push origin "refs/remotes/gitea/main:refs/heads/main"
+          else
+            echo "::error::GitHub main has commits that Gitea main does not; refusing to overwrite. Send the change to Gitea instead."
+            exit 1
+          fi
+          git fetch --tags "$UPSTREAM"
+          git push origin --tags
