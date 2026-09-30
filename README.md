@@ -1,5 +1,7 @@
 # woow-paas-smart-home
 
+> 上游是 Gitea `ha-components/woow_paas_smart_home`；GitHub `WOOWTECH/Woow_ha_paas_smart_home_connect` 是唯讀鏡像（`.github/workflows/mirror-from-gitea.yml` 每小時同步，兩邊同一個 commit）。PR 請開在 Gitea。
+
 這是 homeassitant custom component 會和 woow-paas-platform 整合
 
 使用 Config entries 設定一個 woow paas smart home
