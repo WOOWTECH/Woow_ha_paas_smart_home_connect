@@ -1,6 +1,6 @@
 # woow-paas-smart-home
 
-> 上游是 Gitea `ha-components/woow_paas_smart_home`；GitHub `WOOWTECH/Woow_ha_paas_smart_home_connect` 是唯讀鏡像（`.github/workflows/mirror-from-gitea.yml` 每小時同步，兩邊同一個 commit）。PR 請開在 Gitea。
+> 上游是 Gitea `ha-components/woow_paas_smart_home`；GitHub `WOOWTECH/Woow_ha_paas_smart_home_connect` 是唯讀鏡像，由 Gitea 的推送鏡像（每次 commit＋每 8 小時）同步，兩邊同一個 commit。PR 請開在 Gitea；直接改 GitHub 的內容會在下次同步時被覆蓋。
 
 這是 homeassitant custom component 會和 woow-paas-platform 整合
 
