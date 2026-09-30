@@ -134,6 +134,11 @@ ERR_NO_WORKSPACES = "no_workspaces"
 ERR_NO_HOMES = "no_homes"
 ERR_NO_ACCESSES = "no_accesses"
 ERR_UNKNOWN = "unknown"
+ERR_INSUFFICIENT_ROLE = "insufficient_role"
+
+# Platform 403 body `error` when the user is a workspace member but not an
+# owner/admin — tunnel tokens are a setup-level permission on the platform.
+ERROR_INSUFFICIENT_ROLE = "insufficient_role"
 
 # --- Service names ---
 SERVICE_START_TUNNEL = "start_tunnel"

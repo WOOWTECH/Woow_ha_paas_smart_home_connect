@@ -21,6 +21,7 @@ from .const import (
     API_PATH_SA_WORKSPACES,
     API_PATH_WORKSPACE_HOMES,
     API_PATH_WORKSPACES,
+    ERROR_INSUFFICIENT_ROLE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -39,8 +40,25 @@ class AuthenticationError(ApiError):
     """Raised on 401 Unauthorized or 403 Forbidden."""
 
 
+class InsufficientRoleError(AuthenticationError):
+    """403 ``insufficient_role``: the token is valid but the user is not an owner
+    or admin of the workspace (the platform only hands tunnel tokens to those
+    roles). Re-authorizing cannot fix this, so callers must not trigger reauth."""
+
+
 class NotFoundError(ApiError):
     """Raised on 404 Not Found."""
+
+
+def api_error_for(status: int, error_code: str, message: str) -> ApiError:
+    """Map a non-200 platform response to the exception type callers branch on."""
+    if status == HTTPStatus.FORBIDDEN and error_code == ERROR_INSUFFICIENT_ROLE:
+        return InsufficientRoleError(status, message)
+    if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+        return AuthenticationError(status, message)
+    if status == HTTPStatus.NOT_FOUND:
+        return NotFoundError(status, message)
+    return ApiError(status, message)
 
 
 class WoowPaasApiClient:
@@ -58,7 +76,8 @@ class WoowPaasApiClient:
         """Make an authenticated API request and return parsed JSON.
 
         Raises:
-            AuthenticationError: On 401/403 responses.
+            InsufficientRoleError: On 403 ``insufficient_role``.
+            AuthenticationError: On other 401/403 responses.
             NotFoundError: On 404 responses.
             ApiError: On other non-success HTTP responses.
 
@@ -70,24 +89,19 @@ class WoowPaasApiClient:
             return await resp.json()
 
         # Attempt to extract error detail from response body
+        error_code = ""
         try:
             body = await resp.json()
-            detail = (
-                body.get("detail", body.get("error", ""))
-                if isinstance(body, dict)
-                else ""
-            )
+            if isinstance(body, dict):
+                error_code = body.get("error", "")
+                detail = body.get("detail", error_code)
+            else:
+                detail = ""
         except (ValueError, aiohttp.ContentTypeError):
             detail = await resp.text()
 
         message = f"{resp.status} {detail}" if detail else f"{resp.status}"
-
-        if resp.status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
-            raise AuthenticationError(resp.status, message)
-        if resp.status == HTTPStatus.NOT_FOUND:
-            raise NotFoundError(resp.status, message)
-
-        raise ApiError(resp.status, message)
+        raise api_error_for(resp.status, error_code, message)
 
     async def get_workspaces(self) -> list[dict[str, Any]]:
         """Fetch all workspaces for the authenticated user.

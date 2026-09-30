@@ -46,7 +46,8 @@
     "error": {
       "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
       "invalid_auth": "Invalid authentication. Please re-authorize.",
-      "unknown": "An unexpected error occurred."
+      "unknown": "An unexpected error occurred.",
+      "insufficient_role": "Only owners and admins of this workspace can connect it. Ask one of them to set up this Home Assistant."
     },
     "abort": {
       "already_configured": "This product instance is already configured.",

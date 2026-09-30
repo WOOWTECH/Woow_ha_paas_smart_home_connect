@@ -46,7 +46,8 @@
     "error": {
       "cannot_connect": "無法連線到 Woow PaaS 平台，請稍後再試。",
       "invalid_auth": "驗證失敗，請重新授權。",
-      "unknown": "發生未預期的錯誤。"
+      "unknown": "發生未預期的錯誤。",
+      "insufficient_role": "只有這個工作區的擁有者或管理員可以連線。請他們來設定這台 Home Assistant。"
     },
     "abort": {
       "already_configured": "這個產品已經設定過了。",
