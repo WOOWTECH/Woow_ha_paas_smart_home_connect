@@ -1,0 +1,103 @@
+{
+  "config": {
+    "step": {
+      "pick_implementation": {
+        "title": "選擇驗證方式"
+      },
+      "select_workspace": {
+        "title": "選擇工作區",
+        "description": "選擇 Smart Home 或安全存取所在的工作區。",
+        "data": {
+          "workspace": "工作區"
+        }
+      },
+      "select_product": {
+        "title": "選擇產品",
+        "description": "選擇要和這台 Home Assistant 連線的產品類型。",
+        "data": {
+          "product": "產品"
+        }
+      },
+      "select_home": {
+        "title": "選擇 Smart Home",
+        "description": "選擇要和這台 Home Assistant 連線的 Smart Home。",
+        "data": {
+          "home": "Smart Home"
+        }
+      },
+      "select_access": {
+        "title": "選擇安全存取",
+        "description": "選擇要和這台 Home Assistant 連線的安全存取。",
+        "data": {
+          "access": "安全存取"
+        }
+      },
+      "reauth_confirm": {
+        "title": "重新授權",
+        "description": "Woow PaaS 的授權已過期或缺少必要權限。按「傳送」重新授權。"
+      }
+    },
+    "progress": {
+      "wait_for_device": "在瀏覽器開啟 {url}，輸入代碼 {code}。授權完成後會自動繼續設定。"
+    },
+    "create_entry": {
+      "default": "已連線到 {name}"
+    },
+    "error": {
+      "cannot_connect": "無法連線到 Woow PaaS 平台，請稍後再試。",
+      "invalid_auth": "驗證失敗，請重新授權。",
+      "unknown": "發生未預期的錯誤。"
+    },
+    "abort": {
+      "already_configured": "這個產品已經設定過了。",
+      "no_workspaces": "你的帳號沒有任何工作區，請先建立工作區。",
+      "no_homes": "選擇的工作區裡沒有 Smart Home。",
+      "no_accesses": "選擇的工作區裡沒有安全存取。",
+      "reauth_successful": "重新授權成功。",
+      "device_authorization_failed": "裝置授權失敗或逾時，請再試一次。",
+      "user_rejected_authorize": "授權已被拒絕（{error}）。如要連線，請重新開始設定。",
+      "oauth_error": "收到的權杖資料無效。",
+      "oauth_failed": "取得存取權杖時發生錯誤。",
+      "oauth_timeout": "取得 OAuth 權杖逾時。",
+      "oauth_unauthorized": "取得存取權杖時 OAuth 授權失敗。",
+      "authorize_url_timeout": "產生授權網址逾時。",
+      "no_url_available": "沒有可用的網址。關於這個錯誤，請[參考說明]({docs_url})",
+      "missing_configuration": "元件尚未設定，請參考說明文件。",
+      "missing_credentials": "這個整合需要應用程式憑證。",
+      "oauth_implementation_unavailable": "目前沒有可用的 OAuth2 驗證方式。",
+      "already_in_progress": "這個產品正在設定中。"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "tunnel_status": {
+        "name": "Tunnel 狀態",
+        "state": {
+          "connected": "已連線",
+          "deleted": "已刪除",
+          "disconnected": "未連線",
+          "error": "錯誤",
+          "starting": "啟動中",
+          "unknown": "未知"
+        }
+      },
+      "tunnel_url": {
+        "name": "Tunnel 網址"
+      },
+      "route_url": {
+        "name": "路由 {route}"
+      },
+      "mcp_status": {
+        "name": "MCP 工具",
+        "state": {
+          "not_installed": "未安裝",
+          "installed_not_running": "已安裝，未執行",
+          "running": "執行中"
+        }
+      },
+      "mcp_connect_url": {
+        "name": "MCP 網址"
+      }
+    }
+  }
+}

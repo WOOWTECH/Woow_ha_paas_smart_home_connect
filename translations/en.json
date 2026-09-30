@@ -54,7 +54,18 @@
       "no_homes": "No smart homes found in the selected workspace.",
       "no_accesses": "No security accesses found in the selected workspace.",
       "reauth_successful": "Re-authentication was successful.",
-      "device_authorization_failed": "Device authorization failed or timed out. Please try again."
+      "device_authorization_failed": "Device authorization failed or timed out. Please try again.",
+      "user_rejected_authorize": "Authorization was declined ({error}). Start the setup again if you want to connect.",
+      "oauth_error": "Received invalid token data.",
+      "oauth_failed": "Error while obtaining access token.",
+      "oauth_timeout": "Timeout while resolving the OAuth token.",
+      "oauth_unauthorized": "OAuth authorization error while obtaining access token.",
+      "authorize_url_timeout": "Timeout while generating an authorization URL.",
+      "no_url_available": "No URL available. For information about this error, [check the help section]({docs_url})",
+      "missing_configuration": "The component is not configured. Please follow the documentation.",
+      "missing_credentials": "The integration requires application credentials.",
+      "oauth_implementation_unavailable": "No OAuth2 implementations are currently available.",
+      "already_in_progress": "Setup for this product instance is already in progress."
     }
   },
   "entity": {

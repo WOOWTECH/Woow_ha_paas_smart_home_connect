@@ -609,4 +609,10 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not is_sa:
             data[CONF_SUBDOMAIN] = tunnel_data["subdomain"]
 
-        return self.async_create_entry(title=instance_name, data=data)
+        # strings.json 的 create_entry.default 是 "Successfully connected to {name}"；
+        # 不帶 placeholder 時 HA 前端的 formatjs 會把成功訊息換成 MISSING_VALUE 錯誤。
+        return self.async_create_entry(
+            title=instance_name,
+            data=data,
+            description_placeholders={"name": instance_name},
+        )
