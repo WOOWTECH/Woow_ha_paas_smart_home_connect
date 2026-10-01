@@ -2,21 +2,29 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 import logging
 import os
 
 import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
-from .api_client import ApiError, AuthenticationError, WoowPaasApiClient
+from .api_client import (
+    ApiError,
+    AuthenticationError,
+    InstanceGoneError,
+    WoowPaasApiClient,
+)
 from .cloudflared_manager import CloudflaredManager
 from .const import (
+    CONF_HOME_NAME,
     DOMAIN,
     HA_MCP_DATA_WEBHOOK_ID,
     HA_MCP_DOMAIN,
@@ -31,6 +39,13 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+ISSUE_INSTANCE_DELETED = "instance_deleted"
+
+
+def instance_deleted_issue_id(entry_id: str) -> str:
+    """Repairs issue id for "this entry's SA/SH was deleted on the platform"."""
+    return f"{ISSUE_INSTANCE_DELETED}_{entry_id}"
 
 
 async def async_detect_ha_mcp_state(hass: HomeAssistant) -> McpIntegrationState:
@@ -122,6 +137,12 @@ class TunnelStatusData:
     mcp_integration_state: McpIntegrationState | None = None
     # ha_mcp_tools 生效中的 webhook id；無訂閱／未 RUNNING／local-only 模式時為 None。
     mcp_webhook_id: str | None = None
+    # 本輪 /status 回的 tunnel_status 原值（API 失敗為 None）。留著它，service 才能
+    # 拿即時的本地行程狀態重跑同一張合併表，不必等下一輪輪詢（見
+    # async_update_local_status）。
+    remote_status: str | None = None
+    # status API 回 404：這個 SA／SH 已在平台上刪除（不是暫時錯誤）。
+    instance_deleted: bool = False
 
     @property
     def mcp_connect_url(self) -> str | None:
@@ -177,6 +198,11 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         self._instance_id = instance_id
         self._subdomain = subdomain
         self._product_type = product_type
+        # status API 回 404 ⇒ True；隧道重試迴圈與 start_tunnel service 會看它，
+        # 不把 cloudflared 重新拉起來連一條已刪除的 tunnel。
+        self.instance_deleted = False
+        # 第一次收到平台 JSON 404 的時間；任何一次成功的 poll 會歸零。
+        self._gone_since: datetime | None = None
 
     async def _async_update_data(self) -> TunnelStatusData:
         """Fetch tunnel status by merging local process state and remote API."""
@@ -223,7 +249,28 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             raise ConfigEntryAuthFailed(
                 "Authentication failed while fetching tunnel status"
             ) from err
+        except InstanceGoneError:
+            # 只有平台自己的 JSON 404（error="Not Found"）代表「平台上已經沒有這個
+            # SA／SH」；其他 404、網路錯誤、5xx 落到下一個分支，照舊沿用 last-known 值。
+            # 而且要連續兩輪（相隔至少一個輪詢間隔）都是它才算數：單次 404 可能是
+            # 平台換版途中的誤回，誤判的代價是把使用者的隧道停掉。
+            now = dt_util.utcnow()
+            if self._gone_since is None:
+                self._gone_since = now
+            if self.instance_deleted or now - self._gone_since >= timedelta(
+                seconds=UPDATE_INTERVAL
+            ):
+                return await self._async_mark_instance_deleted()
+            _LOGGER.debug(
+                "Platform reports %s %s not found; marking it deleted if the "
+                "next poll agrees (keeping last-known values)",
+                self._product_type,
+                self._instance_id,
+            )
         except (ApiError, aiohttp.ClientError):
+            if self.instance_deleted and previous is not None:
+                # 已判定刪除後的暫時錯誤不代表恢復，維持 deleted。
+                return previous
             _LOGGER.warning(
                 "Failed to fetch remote status for %s %s, using fallback "
                 "(keeping last-known routes)",
@@ -235,6 +282,11 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
                 f"Unexpected error fetching status for "
                 f"{self._product_type} {self._instance_id}"
             ) from err
+        else:
+            # 只有成功的 poll 才歸零／解除 deleted；暫時錯誤不算「正常回應」。
+            self._gone_since = None
+            if self.instance_deleted:
+                self._async_clear_instance_deleted()
 
         # Build the display URL. Smart home uses its stored subdomain; security
         # access uses its first route hostname (empty when active_no_route / 0 routes).
@@ -273,7 +325,77 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             mcp=mcp,
             mcp_integration_state=mcp_integration_state,
             mcp_webhook_id=mcp_webhook_id,
+            remote_status=remote_status,
         )
+
+    async def _async_mark_instance_deleted(self) -> TunnelStatusData:
+        """status API 回 404：停掉 cloudflared、開 repairs issue、清掉所有舊值。
+
+        舊版把 404 當暫時錯誤：路由 sensor 繼續顯示舊網址、cloudflared 繼續連一條
+        已刪除的 tunnel、log 每 30 秒一條 warning，使用者卻沒有任何提示。
+        """
+        entry = self.config_entry
+        if not self.instance_deleted:
+            self.instance_deleted = True
+            _LOGGER.warning(
+                "%s %s no longer exists on the Woow PaaS platform (status 404); "
+                "stopping its tunnel. Remove this integration entry",
+                self._product_type,
+                self._instance_id,
+            )
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                instance_deleted_issue_id(entry.entry_id),
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key=ISSUE_INSTANCE_DELETED,
+                translation_placeholders={
+                    "name": str(entry.data.get(CONF_HOME_NAME) or entry.title)
+                },
+            )
+        if self._tunnel_manager.is_running:
+            await self._tunnel_manager.stop_tunnel()
+        # 路由清空 ⇒ 路由 sensor 走既有的「路由消失 → unavailable」；mcp 清空 ⇒
+        # MCP sensor 走既有的退訂移除；subdomain_url 清空 ⇒ 不再顯示舊網址。
+        return TunnelStatusData(
+            status=TunnelStatus.DELETED,
+            subdomain_url="",
+            remote_status=TunnelStatus.DELETED,
+            instance_deleted=True,
+        )
+
+    @callback
+    def _async_clear_instance_deleted(self) -> None:
+        """404 之後 status 又正常（誤判或平台復原）：清 issue，重載 entry。
+
+        重載會重新取 tunnel token 並走一般的隧道啟動流程，cloudflared 因此自動
+        回來；不必在這裡另寫一條啟動路徑。
+        """
+        self.instance_deleted = False
+        _LOGGER.info(
+            "%s %s is reachable on the platform again; reloading the entry",
+            self._product_type,
+            self._instance_id,
+        )
+        ir.async_delete_issue(
+            self.hass, DOMAIN, instance_deleted_issue_id(self.config_entry.entry_id)
+        )
+        self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
+
+    @callback
+    def async_update_local_status(self) -> None:
+        """用即時的本地行程狀態 × 上一輪的遠端狀態重算 status（不打 API）。
+
+        start_tunnel／stop_tunnel 後呼叫，讓 sensor 與 get_status 立刻反映，而不是
+        最多舊 30 秒（tunnel_running=false 卻還顯示 connected）。
+        """
+        data = self.data
+        if data is None:
+            return
+        status = self._merge_status(self._tunnel_manager.is_running, data.remote_status)
+        if status != data.status:
+            self.async_set_updated_data(replace(data, status=status))
 
     @staticmethod
     def _merge_status(
