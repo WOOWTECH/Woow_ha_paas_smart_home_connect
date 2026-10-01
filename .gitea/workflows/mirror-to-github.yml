@@ -1,0 +1,62 @@
+# 把 Gitea main 與 tags 推到 GitHub 鏡像 WOOWTECH/Woow_ha_paas_smart_home_connect，
+# 兩邊指向同一個 commit。
+#
+# 為什麼是 Gitea 主動推、而不是別的做法：
+# * GitHub 端 pull 不通：git-prod.woowtech.io 前面有 Cloudflare Access，GitHub runner
+#   會被導到 Access 登入頁。
+# * Gitea 內建推送鏡像不收 SSH（API 回 "Invalid mirror protocol"），HTTPS 又得放一把
+#   會過期的 GitHub token。
+# 所以用叢集內 runner（連得到 github.com:22）＋只限這個 repo 的 GitHub 部署金鑰
+# （可寫）。私鑰在本 repo 的 Actions secret `GH_MIRROR_SSH_KEY`。
+#
+# 只推、不 force：GitHub main 若有 Gitea 沒有的 commit，push 會被拒、job 變紅——
+# 變更請改送 Gitea PR，不要直接改 GitHub。
+name: mirror-to-github
+
+on:
+  push:
+    branches: [main]
+    tags: ["*"]
+  workflow_dispatch:
+  # 補推：某次 runner 忙或 GitHub 暫時不通時，最晚 8 小時內追上。
+  schedule:
+    - cron: "23 */8 * * *"
+
+concurrency:
+  group: mirror-to-github
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push main and tags to GitHub
+        env:
+          SSH_KEY: ${{ secrets.GH_MIRROR_SSH_KEY }}
+          GITHUB_MIRROR: git@github.com:WOOWTECH/Woow_ha_paas_smart_home_connect.git
+          # GitHub 官方公布的 ed25519 主機金鑰（指紋 SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU）。
+          # 寫死而不是 ssh-keyscan：keyscan 會無條件相信當下連到的那台主機。
+          GITHUB_HOST_KEY: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+        run: |
+          set -euo pipefail
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::secret GH_MIRROR_SSH_KEY is missing"
+            exit 1
+          fi
+          if ! command -v ssh >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq openssh-client >/dev/null
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/gh_mirror && chmod 600 ~/.ssh/gh_mirror
+          printf '%s\n' "$GITHUB_HOST_KEY" > ~/.ssh/known_hosts_github
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/gh_mirror -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_github -o StrictHostKeyChecking=yes"
+
+          git fetch --tags --force origin
+          git remote add github "$GITHUB_MIRROR"
+          git push github "refs/remotes/origin/main:refs/heads/main"
+          git push github --tags
+          echo "GitHub main -> $(git rev-parse --short refs/remotes/origin/main)"
