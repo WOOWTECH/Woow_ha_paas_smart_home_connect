@@ -31,7 +31,9 @@ class McpIntegrationState(StrEnum):
 DOMAIN = "woow_paas_smart_home"
 
 # --- API ---
-API_BASE_URL = "https://stg.woowtech.io"
+# 正式站。GitHub 是公開鏡像，照著安裝的人必須連到正式站；開發要連測試站時
+# 自己把這行改成 "https://stg.woowtech.io"（OAuth client 兩站都有登記）。
+API_BASE_URL = "https://aiot.woowtech.io"
 
 # API endpoint paths (Smart Home)
 API_PATH_WORKSPACES = "/api/smarthome/workspaces"
