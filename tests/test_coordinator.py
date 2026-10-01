@@ -14,12 +14,16 @@ import aiohttp
 from custom_components.woow_paas_smart_home.api_client import (
     ApiError,
     AuthenticationError,
+    InstanceGoneError,
     NotFoundError,
+    WoowPaasApiClient,
+    api_error_for,
 )
 from custom_components.woow_paas_smart_home.const import (
     DOMAIN,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
+    UPDATE_INTERVAL,
     McpIntegrationState,
     TunnelStatus,
 )
@@ -31,6 +35,7 @@ from custom_components.woow_paas_smart_home.coordinator import (
     instance_deleted_issue_id,
 )
 from custom_components.woow_paas_smart_home.sensor import TunnelStatusSensor
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 
 from homeassistant.core import HomeAssistant
@@ -541,8 +546,18 @@ def test_mcp_webhook_id_skips_local_only_entry_and_takes_next() -> None:
 #
 # 舊版把 404 當暫時錯誤：tunnel status 變 unknown、路由 sensor 繼續顯示舊網址、
 # cloudflared 繼續連一條已刪除的 tunnel、log 每 30 秒一條 warning，使用者沒有任何
-# 提示。
+# 提示。兩道保險：只認平台自己的 JSON 404（error="Not Found"），且要連續兩輪
+# （相隔至少一個輪詢間隔）都是它才算刪除。
 # ---------------------------------------------------------------------------
+
+# 平台 ha_api 真正「找不到」時的回應（_get_home_with_access／_get_sa_with_access）。
+_GONE_BODY = {"error": "Not Found", "detail": "Security access not found"}
+
+
+def _gone() -> InstanceGoneError:
+    err = api_error_for(404, _GONE_BODY["error"], f"404 {_GONE_BODY['detail']}")
+    assert type(err) is InstanceGoneError
+    return err
 
 
 def _deletable_coordinator(
@@ -561,11 +576,136 @@ def _deletable_coordinator(
     return coord
 
 
-async def test_sa_404_marks_deleted_clears_routes_and_stops_tunnel(
-    hass: HomeAssistant,
+async def _poll(coord: TunnelCoordinator, freezer: FrozenDateTimeFactory):
+    """模擬一輪排程輪詢：先過一個 update interval 再 poll。"""
+    freezer.tick(UPDATE_INTERVAL)
+    data = await coord._async_update_data()
+    coord.data = data
+    return data
+
+
+def _issue(hass: HomeAssistant):
+    return ir.async_get(hass).async_get_issue(DOMAIN, instance_deleted_issue_id("e1"))
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [(404, "Not Found"), (404, ""), (404, "not_found"), (500, "Not Found")],
+)
+def test_only_platform_json_404_is_instance_gone(status: int, code: str) -> None:
+    """非 JSON（error 碼空字串）或 error 不是 "Not Found" 的 404 只是一般 NotFoundError。"""
+    err = api_error_for(status, code, "msg")
+    assert (type(err) is InstanceGoneError) == (status == 404 and code == "Not Found")
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (_GONE_BODY, InstanceGoneError),
+        ({"error": "Not Found", "detail": "Smart home not found"}, InstanceGoneError),
+        # 平台換版時 Odoo 路由還沒載入、Cloudflare 錯誤頁、反向代理：非 JSON。
+        (None, NotFoundError),
+        # JSON 但不是平台 ha_api 的 error 碼。
+        ({"error": "route_not_found"}, NotFoundError),
+    ],
+)
+async def test_api_client_classifies_404_bodies(body, expected) -> None:
+    resp = MagicMock()
+    resp.status = 404
+    if body is None:
+        resp.json = AsyncMock(side_effect=ValueError("not json"))
+        resp.text = AsyncMock(return_value="<html>404 Not Found</html>")
+    else:
+        resp.json = AsyncMock(return_value=body)
+    session = MagicMock()
+    session.async_request = AsyncMock(return_value=resp)
+    client = WoowPaasApiClient(session, "https://paas.example")
+
+    with pytest.raises(NotFoundError) as exc:
+        await client.get_access_status(6)
+
+    assert type(exc.value) is expected
+
+
+async def test_non_json_404_never_marks_deleted(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """一般 404 連續多輪也只當暫時錯誤：沿用舊路由、不停隧道、不開 issue。"""
+    api = MagicMock()
+    api.get_access_status = AsyncMock(side_effect=NotFoundError(404, "404 <html>"))
+    coord = _deletable_coordinator(
+        hass, api=api, running=True, product_type=PRODUCT_SECURITY_ACCESS
+    )
+    routes = (RouteInfo(route_id="7", hostname="test1.woowtech.io"),)
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.CONNECTED,
+        subdomain_url="https://test1.woowtech.io",
+        routes=routes,
+    )
+
+    for _ in range(3):
+        data = await _poll(coord, freezer)
+
+    assert data.routes == routes
+    assert data.instance_deleted is False
+    assert coord.instance_deleted is False
+    coord._tunnel_manager.stop_tunnel.assert_not_awaited()
+    assert _issue(hass) is None
+
+
+async def test_single_platform_404_does_not_mark_deleted(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, caplog
 ) -> None:
     api = MagicMock()
-    api.get_access_status = AsyncMock(side_effect=NotFoundError(404, "404"))
+    api.get_access_status = AsyncMock(side_effect=_gone())
+    coord = _deletable_coordinator(
+        hass, api=api, running=True, product_type=PRODUCT_SECURITY_ACCESS
+    )
+    routes = (RouteInfo(route_id="7", hostname="test1.woowtech.io"),)
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.CONNECTED,
+        subdomain_url="https://test1.woowtech.io",
+        state="active",
+        routes=routes,
+    )
+
+    data = await _poll(coord, freezer)
+
+    # 沿用舊值，只記 debug。
+    assert data.routes == routes
+    assert data.subdomain_url == "https://test1.woowtech.io"
+    assert data.instance_deleted is False
+    coord._tunnel_manager.stop_tunnel.assert_not_awaited()
+    assert _issue(hass) is None
+    assert "WARNING" not in caplog.text
+
+
+async def test_second_404_within_interval_does_not_count(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """兩次 404 相隔不到一個輪詢間隔（例如手動 refresh）不算兩輪。"""
+    api = MagicMock()
+    api.get_access_status = AsyncMock(side_effect=_gone())
+    coord = _deletable_coordinator(
+        hass, api=api, running=True, product_type=PRODUCT_SECURITY_ACCESS
+    )
+
+    await _poll(coord, freezer)
+    freezer.tick(5)
+    await coord._async_update_data()
+
+    assert coord.instance_deleted is False
+    assert _issue(hass) is None
+    # 到了下一個輪詢間隔才成立。
+    await _poll(coord, freezer)
+    assert coord.instance_deleted is True
+
+
+async def test_two_consecutive_platform_404_mark_deleted(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    api = MagicMock()
+    api.get_access_status = AsyncMock(side_effect=_gone())
     coord = _deletable_coordinator(
         hass, api=api, running=True, product_type=PRODUCT_SECURITY_ACCESS
     )
@@ -577,7 +717,8 @@ async def test_sa_404_marks_deleted_clears_routes_and_stops_tunnel(
         remote_status="connected",
     )
 
-    data = await coord._async_update_data()
+    await _poll(coord, freezer)
+    data = await _poll(coord, freezer)
 
     assert data.status is TunnelStatus.DELETED
     assert data.is_connected is False
@@ -589,16 +730,66 @@ async def test_sa_404_marks_deleted_clears_routes_and_stops_tunnel(
     assert coord.instance_deleted is True
     coord._tunnel_manager.stop_tunnel.assert_awaited_once()
 
-    issue = ir.async_get(hass).async_get_issue(DOMAIN, instance_deleted_issue_id("e1"))
+    issue = _issue(hass)
     assert issue is not None
     assert issue.translation_key == "instance_deleted"
     assert issue.translation_placeholders == {"name": "sa-e2e"}
     assert issue.is_fixable is False
 
 
-async def test_sh_404_drops_mcp_values(hass: HomeAssistant) -> None:
+async def test_success_between_404s_resets_the_count(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    ok = {"tunnel_status": "connected", "state": "active", "routes": []}
     api = MagicMock()
-    api.get_home_status = AsyncMock(side_effect=NotFoundError(404, "404"))
+    api.get_access_status = AsyncMock(side_effect=[_gone(), ok, _gone(), _gone()])
+    coord = _deletable_coordinator(
+        hass, api=api, running=True, product_type=PRODUCT_SECURITY_ACCESS
+    )
+
+    await _poll(coord, freezer)  # 404 #1
+    await _poll(coord, freezer)  # 正常 ⇒ 歸零
+    await _poll(coord, freezer)  # 404（重新起算）
+    assert coord.instance_deleted is False
+    assert _issue(hass) is None
+
+    await _poll(coord, freezer)  # 連續第二輪 404
+    assert coord.instance_deleted is True
+
+
+async def test_transient_error_between_404s_does_not_reset(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """5xx 不是「正常回應」，不歸零；也不可把已判定的 deleted 解除。"""
+    api = MagicMock()
+    api.get_access_status = AsyncMock(
+        side_effect=[_gone(), ApiError(503, "down"), _gone(), ApiError(502, "bad")]
+    )
+    coord = _deletable_coordinator(
+        hass, api=api, running=False, product_type=PRODUCT_SECURITY_ACCESS
+    )
+    reload = MagicMock()
+    monkeypatch.setattr(hass.config_entries, "async_schedule_reload", reload)
+
+    await _poll(coord, freezer)
+    await _poll(coord, freezer)
+    await _poll(coord, freezer)
+    assert coord.instance_deleted is True
+
+    data = await _poll(coord, freezer)
+    assert data.status is TunnelStatus.DELETED
+    assert coord.instance_deleted is True
+    assert _issue(hass) is not None
+    reload.assert_not_called()
+
+
+async def test_sh_deleted_drops_mcp_values(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    api = MagicMock()
+    api.get_home_status = AsyncMock(side_effect=_gone())
     coord = _deletable_coordinator(
         hass, api=api, running=False, product_type=PRODUCT_SMART_HOME
     )
@@ -610,7 +801,9 @@ async def test_sh_404_drops_mcp_values(hass: HomeAssistant) -> None:
         mcp_webhook_id="mcp_" + "a" * 32,
     )
 
-    data = await coord._async_update_data()
+    first = await _poll(coord, freezer)
+    assert first.mcp == "ha_mcp_tools"  # 單次 404 沿用舊值
+    data = await _poll(coord, freezer)
 
     assert data.status is TunnelStatus.DELETED
     assert data.subdomain_url == ""
@@ -624,10 +817,13 @@ async def test_sh_404_drops_mcp_values(hass: HomeAssistant) -> None:
 
 
 async def test_repeated_404_creates_issue_once_and_warns_once(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, caplog
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
+    caplog,
 ) -> None:
     api = MagicMock()
-    api.get_access_status = AsyncMock(side_effect=NotFoundError(404, "404"))
+    api.get_access_status = AsyncMock(side_effect=_gone())
     coord = _deletable_coordinator(
         hass, api=api, running=False, product_type=PRODUCT_SECURITY_ACCESS
     )
@@ -637,8 +833,8 @@ async def test_repeated_404_creates_issue_once_and_warns_once(
         create,
     )
 
-    for _ in range(3):
-        await coord._async_update_data()
+    for _ in range(4):
+        await _poll(coord, freezer)
 
     assert create.call_count == 1
     assert caplog.text.count("no longer exists on the Woow PaaS platform") == 1
@@ -649,7 +845,9 @@ async def test_repeated_404_creates_issue_once_and_warns_once(
     [ApiError(500, "boom"), ApiError(503, "down"), aiohttp.ClientError("net")],
     ids=["500", "503", "network"],
 )
-async def test_only_404_means_deleted(hass: HomeAssistant, error) -> None:
+async def test_network_and_5xx_never_mean_deleted(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, error
+) -> None:
     """網路錯誤、5xx 維持現狀：沿用舊路由、不停 cloudflared、不開 issue。"""
     api = MagicMock()
     api.get_access_status = AsyncMock(side_effect=error)
@@ -663,26 +861,27 @@ async def test_only_404_means_deleted(hass: HomeAssistant, error) -> None:
         routes=routes,
     )
 
-    data = await coord._async_update_data()
+    for _ in range(2):
+        data = await _poll(coord, freezer)
 
     assert data.status is TunnelStatus.UNKNOWN
     assert data.routes == routes
-    assert data.instance_deleted is False
     assert coord.instance_deleted is False
     coord._tunnel_manager.stop_tunnel.assert_not_awaited()
-    assert ir.async_get(hass).async_get_issue(
-        DOMAIN, instance_deleted_issue_id("e1")
-    ) is None
+    assert _issue(hass) is None
 
 
-async def test_status_back_after_404_clears_issue_and_reloads(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+async def test_status_back_after_deleted_clears_issue_and_reloads(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    freezer: FrozenDateTimeFactory,
 ) -> None:
     """誤判（或平台復原）時要能恢復：清 issue、重載 entry 讓隧道照一般流程回來。"""
     api = MagicMock()
     api.get_access_status = AsyncMock(
         side_effect=[
-            NotFoundError(404, "404"),
+            _gone(),
+            _gone(),
             {"tunnel_status": "disconnected", "state": "active", "routes": []},
         ]
     )
@@ -691,18 +890,18 @@ async def test_status_back_after_404_clears_issue_and_reloads(
     )
     reload = MagicMock()
     monkeypatch.setattr(hass.config_entries, "async_schedule_reload", reload)
-    issue_id = instance_deleted_issue_id("e1")
 
-    await coord._async_update_data()
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+    await _poll(coord, freezer)
+    await _poll(coord, freezer)
+    assert _issue(hass) is not None
     reload.assert_not_called()
 
-    data = await coord._async_update_data()
+    data = await _poll(coord, freezer)
 
     assert data.status is TunnelStatus.DISCONNECTED
     assert data.instance_deleted is False
     assert coord.instance_deleted is False
-    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+    assert _issue(hass) is None
     reload.assert_called_once_with("e1")
 
 

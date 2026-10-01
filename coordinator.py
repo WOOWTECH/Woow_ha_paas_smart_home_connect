@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 import os
 
@@ -14,11 +14,12 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api_client import (
     ApiError,
     AuthenticationError,
-    NotFoundError,
+    InstanceGoneError,
     WoowPaasApiClient,
 )
 from .cloudflared_manager import CloudflaredManager
@@ -200,6 +201,8 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         # status API 回 404 ⇒ True；隧道重試迴圈與 start_tunnel service 會看它，
         # 不把 cloudflared 重新拉起來連一條已刪除的 tunnel。
         self.instance_deleted = False
+        # 第一次收到平台 JSON 404 的時間；任何一次成功的 poll 會歸零。
+        self._gone_since: datetime | None = None
 
     async def _async_update_data(self) -> TunnelStatusData:
         """Fetch tunnel status by merging local process state and remote API."""
@@ -246,11 +249,28 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             raise ConfigEntryAuthFailed(
                 "Authentication failed while fetching tunnel status"
             ) from err
-        except NotFoundError:
-            # 只有 404 代表「平台上已經沒有這個 SA／SH」；網路錯誤、5xx 落到下一個
-            # 分支，照舊沿用 last-known 值。
-            return await self._async_mark_instance_deleted()
+        except InstanceGoneError:
+            # 只有平台自己的 JSON 404（error="Not Found"）代表「平台上已經沒有這個
+            # SA／SH」；其他 404、網路錯誤、5xx 落到下一個分支，照舊沿用 last-known 值。
+            # 而且要連續兩輪（相隔至少一個輪詢間隔）都是它才算數：單次 404 可能是
+            # 平台換版途中的誤回，誤判的代價是把使用者的隧道停掉。
+            now = dt_util.utcnow()
+            if self._gone_since is None:
+                self._gone_since = now
+            if self.instance_deleted or now - self._gone_since >= timedelta(
+                seconds=UPDATE_INTERVAL
+            ):
+                return await self._async_mark_instance_deleted()
+            _LOGGER.debug(
+                "Platform reports %s %s not found; marking it deleted if the "
+                "next poll agrees (keeping last-known values)",
+                self._product_type,
+                self._instance_id,
+            )
         except (ApiError, aiohttp.ClientError):
+            if self.instance_deleted and previous is not None:
+                # 已判定刪除後的暫時錯誤不代表恢復，維持 deleted。
+                return previous
             _LOGGER.warning(
                 "Failed to fetch remote status for %s %s, using fallback "
                 "(keeping last-known routes)",
@@ -262,9 +282,11 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
                 f"Unexpected error fetching status for "
                 f"{self._product_type} {self._instance_id}"
             ) from err
-
-        if self.instance_deleted:
-            self._async_clear_instance_deleted()
+        else:
+            # 只有成功的 poll 才歸零／解除 deleted；暫時錯誤不算「正常回應」。
+            self._gone_since = None
+            if self.instance_deleted:
+                self._async_clear_instance_deleted()
 
         # Build the display URL. Smart home uses its stored subdomain; security
         # access uses its first route hostname (empty when active_no_route / 0 routes).

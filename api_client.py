@@ -22,6 +22,7 @@ from .const import (
     API_PATH_WORKSPACE_HOMES,
     API_PATH_WORKSPACES,
     ERROR_INSUFFICIENT_ROLE,
+    ERROR_NOT_FOUND,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,6 +51,13 @@ class NotFoundError(ApiError):
     """Raised on 404 Not Found."""
 
 
+class InstanceGoneError(NotFoundError):
+    """平台本身回的 JSON 404 ``{"error": "Not Found"}``：這個 SA／SH 已不存在。
+
+    與一般 404 分開：平台換版時 Odoo 路由還沒載入、Cloudflare 錯誤頁、反向代理
+    都可能回 404，但那些不代表實例被刪除，不可據此停隧道。"""
+
+
 def api_error_for(status: int, error_code: str, message: str) -> ApiError:
     """Map a non-200 platform response to the exception type callers branch on."""
     if status == HTTPStatus.FORBIDDEN and error_code == ERROR_INSUFFICIENT_ROLE:
@@ -57,6 +65,8 @@ def api_error_for(status: int, error_code: str, message: str) -> ApiError:
     if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
         return AuthenticationError(status, message)
     if status == HTTPStatus.NOT_FOUND:
+        if error_code == ERROR_NOT_FOUND:
+            return InstanceGoneError(status, message)
         return NotFoundError(status, message)
     return ApiError(status, message)
 

@@ -144,6 +144,13 @@ ERR_INSUFFICIENT_ROLE = "insufficient_role"
 # owner/admin — tunnel tokens are a setup-level permission on the platform.
 ERROR_INSUFFICIENT_ROLE = "insufficient_role"
 
+# Platform 404 body `error` when the smart home / security access itself does not
+# exist (ha_api ``_get_home_with_access`` / ``_get_sa_with_access``). Only a JSON
+# 404 carrying this code means "deleted"; any other 404 (Odoo routes not loaded
+# yet during a platform rollout, a Cloudflare error page, a reverse proxy) is
+# treated as transient.
+ERROR_NOT_FOUND = "Not Found"
+
 # --- Service names ---
 SERVICE_START_TUNNEL = "start_tunnel"
 SERVICE_STOP_TUNNEL = "stop_tunnel"
