@@ -104,5 +104,11 @@
         "name": "MCP URL"
       }
     }
+  },
+  "issues": {
+    "instance_deleted": {
+      "title": "{name} was deleted on Woow PaaS",
+      "description": "\"{name}\" no longer exists on the Woow PaaS platform, so its tunnel has been stopped and its sensors are unavailable. Remove this integration entry under Settings → Devices & services → Woow PaaS Smart Home. If the deletion was a mistake, this notice clears by itself once the platform reports the instance again."
+    }
   }
 }

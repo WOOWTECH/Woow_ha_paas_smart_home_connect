@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
+from http import HTTPStatus
 import logging
 
 import aiohttp
@@ -17,7 +19,12 @@ from homeassistant.core import (
     SupportsResponse,
 )
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
-from homeassistant.helpers import config_entry_oauth2_flow, config_validation as cv
+from homeassistant.helpers import (
+    config_entry_oauth2_flow,
+    config_validation as cv,
+    issue_registry as ir,
+)
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.config_entry_oauth2_flow import (
     OAuth2Session,
     async_get_config_entry_implementation,
@@ -41,6 +48,8 @@ from .const import (
     CONF_TUNNEL_TOKEN,
     CONF_WORKSPACE_ID,
     DOMAIN,
+    OAUTH2_CLIENT_ID,
+    OAUTH2_REVOKE,
     PLATFORMS,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
@@ -48,7 +57,7 @@ from .const import (
     SERVICE_START_TUNNEL,
     SERVICE_STOP_TUNNEL,
 )
-from .coordinator import TunnelCoordinator
+from .coordinator import TunnelCoordinator, instance_deleted_issue_id
 from .oauth2 import create_implementation
 from .oauth_callback_view import async_register_woow_callback_view
 
@@ -146,11 +155,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 f"No tunnel token for home_id={home_id}"
             )
 
+        if runtime_data.coordinator.instance_deleted:
+            raise HomeAssistantError(
+                f"home_id={home_id} has been deleted on the Woow PaaS platform; "
+                "remove this integration entry"
+            )
+
         manager = runtime_data.tunnel_manager
         if not await manager.ensure_binary():
             raise HomeAssistantError("Failed to download cloudflared binary")
 
-        if not await manager.start_tunnel(tunnel_token):
+        started = await manager.start_tunnel(tunnel_token)
+        runtime_data.coordinator.async_update_local_status()
+        if not started:
             raise HomeAssistantError("Failed to start cloudflared tunnel")
 
     async def _handle_stop_tunnel(call: ServiceCall) -> None:
@@ -160,7 +177,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             hass, home_id, call.data.get("product_type")
         )
 
-        if not await runtime_data.tunnel_manager.stop_tunnel():
+        stopped = await runtime_data.tunnel_manager.stop_tunnel()
+        runtime_data.coordinator.async_update_local_status()
+        if not stopped:
             raise HomeAssistantError("Failed to stop cloudflared tunnel")
 
     async def _handle_get_status(call: ServiceCall) -> ServiceResponse:
@@ -170,6 +189,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             hass, home_id, call.data.get("product_type")
         )
 
+        # 行程可能在兩輪輪詢之間起停（service 或自己掛掉）；先用即時的
+        # tunnel_running 重跑合併表，回傳的三個欄位才彼此一致。
+        runtime_data.coordinator.async_update_local_status()
         coord_data = runtime_data.coordinator.data
         return {
             "product_type": entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_SMART_HOME),
@@ -209,6 +231,7 @@ async def _async_start_tunnel_with_retry(
     tunnel_manager: CloudflaredManager,
     product_type: str,
     instance_id: int | str,
+    is_deleted: Callable[[], bool] = lambda: False,
 ) -> None:
     """把隧道拉起來，失敗就退避重試，直到成功（或工作被取消）。
 
@@ -224,6 +247,9 @@ async def _async_start_tunnel_with_retry(
 
     抽成模組層函式（而非留在 ``async_setup_entry`` 的閉包裡）是為了可測試：
     一個帶無限迴圈的閉包沒辦法在不架整個 config entry 的情況下驗證。
+
+    ``is_deleted`` 為 True（status API 回 404，SA／SH 已在平台刪除）就停手：
+    重試只會把 cloudflared 拉起來連一條已不存在的 tunnel。
     """
     delay = _TUNNEL_RETRY_INITIAL
     attempt = 0
@@ -231,6 +257,13 @@ async def _async_start_tunnel_with_retry(
 
     while True:
         attempt += 1
+        if is_deleted():
+            _LOGGER.info(
+                "%s %s was deleted on the platform; not starting its tunnel",
+                product_type,
+                instance_id,
+            )
+            return
         try:
             # 缺 token 是設定問題不是網路問題，重試永遠不會好——直接放棄，並且講清楚
             # 要怎麼修，不要讓它混在網路重試裡被稀釋掉。
@@ -352,7 +385,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
     entry.async_create_background_task(
         hass,
         _async_start_tunnel_with_retry(
-            entry, tunnel_manager, product_type, instance_id
+            entry,
+            tunnel_manager,
+            product_type,
+            instance_id,
+            lambda: coordinator.instance_deleted,
         ),
         f"woow_tunnel_start_{entry.entry_id}",
     )
@@ -375,6 +412,9 @@ async def async_remove_entry(
     hass: HomeAssistant, entry: WoowConfigEntry
 ) -> None:
     """Clean up resources when a config entry is removed."""
+    ir.async_delete_issue(hass, DOMAIN, instance_deleted_issue_id(entry.entry_id))
+    await _async_revoke_platform_token(hass, entry)
+
     # Only clean up binary if no other entries remain for this domain
     remaining = [
         e
@@ -384,3 +424,42 @@ async def async_remove_entry(
     if not remaining:
         tunnel_manager = CloudflaredManager(hass)
         await tunnel_manager.cleanup_binary()
+
+
+async def _async_revoke_platform_token(
+    hass: HomeAssistant, entry: WoowConfigEntry
+) -> None:
+    """移除 entry 時向平台撤銷它的 OAuth 授權（RFC 7009 ``/oauth2/revoke``）。
+
+    不撤銷的話，移除後 refresh token 在平台上仍有效 30 天。平台的 token 紀錄
+    一筆同時帶 access／refresh token，撤銷 refresh token 會把整筆標成 revoked，
+    access token 跟著失效，所以送一個就夠。每個 entry 有自己的一組 token，
+    同一個 HA 的其他 entry 不受影響。
+
+    best-effort：任何失敗只記 log，絕不阻擋移除——使用者要移除的就是這個
+    entry，平台連不上不該讓它卡住。
+    """
+    token = entry.data.get("token") or {}
+    token_str = token.get("refresh_token") or token.get("access_token")
+    if not token_str:
+        return
+    try:
+        async with async_get_clientsession(hass).post(
+            f"{API_BASE_URL}{OAUTH2_REVOKE}",
+            data={"token": token_str, "client_id": OAUTH2_CLIENT_ID},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status != HTTPStatus.OK:
+                _LOGGER.warning(
+                    "Revoking the platform OAuth token for %s returned HTTP %s",
+                    entry.title,
+                    resp.status,
+                )
+                return
+        _LOGGER.debug("Revoked the platform OAuth token for %s", entry.title)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning(
+            "Could not revoke the platform OAuth token for %s: %s",
+            entry.title,
+            str(err) or type(err).__name__,
+        )

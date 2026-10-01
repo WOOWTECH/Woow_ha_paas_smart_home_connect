@@ -104,5 +104,11 @@
         "name": "MCP 網址"
       }
     }
+  },
+  "issues": {
+    "instance_deleted": {
+      "title": "{name} 已在 Woow PaaS 平台上刪除",
+      "description": "「{name}」已在 Woow PaaS 平台上刪除，隧道已停止、相關感測器變為無法使用。請到「設定 → 裝置與服務 → Woow PaaS Smart Home」移除這個整合項目。若是誤刪，平台恢復後這則通知會自動消失。"
+    }
   }
 }
