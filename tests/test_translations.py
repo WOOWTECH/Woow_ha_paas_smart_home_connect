@@ -119,3 +119,12 @@ async def test_create_entry_passes_name_placeholder(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "sh-e2e-oauth"
     assert result["description_placeholders"] == {"name": "sh-e2e-oauth"}
+
+
+def test_flow_never_shows_an_empty_form_with_errors() -> None:
+    """HA 前端在 data_schema 為空時不顯示 base 錯誤。
+
+    2026-10-01 正式站實測：非 owner／admin 選了 SA 之後，對話框只剩標題和
+    「傳送」，看不到「只有擁有者或管理員可以連線」。錯誤一律走 async_abort。
+    """
+    assert "vol.Schema({})" not in inspect.getsource(cf)

@@ -66,7 +66,11 @@
       "missing_configuration": "The component is not configured. Please follow the documentation.",
       "missing_credentials": "The integration requires application credentials.",
       "oauth_implementation_unavailable": "No OAuth2 implementations are currently available.",
-      "already_in_progress": "Setup for this product instance is already in progress."
+      "already_in_progress": "Setup for this product instance is already in progress.",
+      "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
+      "invalid_auth": "Invalid authentication. Please re-authorize.",
+      "unknown": "An unexpected error occurred.",
+      "insufficient_role": "Only owners and admins of this workspace can connect it. Ask one of them to set up this Home Assistant."
     }
   },
   "entity": {

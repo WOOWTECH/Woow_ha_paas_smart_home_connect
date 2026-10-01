@@ -90,7 +90,7 @@ async def test_flow_api_request_raises_insufficient_role(
         await flow._async_api_request("GET", "/api/smarthome/homes/6/tunnel-token")
 
 
-async def test_create_entry_shows_insufficient_role_error(
+async def test_create_entry_aborts_with_insufficient_role(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = ConfigFlow()
@@ -111,6 +111,6 @@ async def test_create_entry_shows_insufficient_role_error(
         product_type=PRODUCT_SMART_HOME, instance_id=6, instance_name="sh-e2e-oauth"
     )
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "select_home"
-    assert result["errors"] == {"base": "insufficient_role"}
+    # abort 而不是表單：HA 前端在空欄位表單上不顯示 base 錯誤（見 test_translations）。
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "insufficient_role"

@@ -66,7 +66,11 @@
       "missing_configuration": "元件尚未設定，請參考說明文件。",
       "missing_credentials": "這個整合需要應用程式憑證。",
       "oauth_implementation_unavailable": "目前沒有可用的 OAuth2 驗證方式。",
-      "already_in_progress": "這個產品正在設定中。"
+      "already_in_progress": "這個產品正在設定中。",
+      "cannot_connect": "無法連線到 Woow PaaS 平台，請稍後再試。",
+      "invalid_auth": "驗證失敗，請重新授權。",
+      "unknown": "發生未預期的錯誤。",
+      "insufficient_role": "只有這個工作區的擁有者或管理員可以連線。請他們來設定這台 Home Assistant。"
     }
   },
   "entity": {
