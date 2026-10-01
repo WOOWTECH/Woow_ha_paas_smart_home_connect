@@ -347,27 +347,15 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         except AuthenticationError:
             _LOGGER.warning("Authentication failed while fetching workspaces")
             errors["base"] = ERR_INVALID_AUTH
-            return self.async_show_form(
-                step_id="select_workspace",
-                data_schema=vol.Schema({}),
-                errors=errors,
-            )
+            return self.async_abort(reason=errors["base"])
         except (ApiError, aiohttp.ClientError):
             _LOGGER.exception("Failed to fetch workspaces")
             errors["base"] = ERR_CANNOT_CONNECT
-            return self.async_show_form(
-                step_id="select_workspace",
-                data_schema=vol.Schema({}),
-                errors=errors,
-            )
+            return self.async_abort(reason=errors["base"])
         except Exception:
             _LOGGER.exception("Unexpected error fetching workspaces")
             errors["base"] = ERR_UNKNOWN
-            return self.async_show_form(
-                step_id="select_workspace",
-                data_schema=vol.Schema({}),
-                errors=errors,
-            )
+            return self.async_abort(reason=errors["base"])
 
         if not self._workspaces:
             return self.async_abort(reason=ERR_NO_WORKSPACES)
@@ -451,11 +439,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 errors["base"] = ERR_UNKNOWN
 
         if errors:
-            return self.async_show_form(
-                step_id="select_home",
-                data_schema=vol.Schema({}),
-                errors=errors,
-            )
+            return self.async_abort(reason=errors["base"])
 
         if not self._homes:
             return self.async_abort(reason=ERR_NO_HOMES)
@@ -514,11 +498,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 errors["base"] = ERR_UNKNOWN
 
         if errors:
-            return self.async_show_form(
-                step_id="select_access",
-                data_schema=vol.Schema({}),
-                errors=errors,
-            )
+            return self.async_abort(reason=errors["base"])
 
         if not self._accesses:
             return self.async_abort(reason=ERR_NO_ACCESSES)
@@ -578,6 +558,9 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             )
         except InsufficientRoleError:
             # 成員看得到清單，但 tunnel token 只給 owner／admin；重新授權修不好。
+            # 這裡和本檔其他錯誤一律用 abort 而不是「空欄位表單＋errors」：HA 前端
+            # 在 data_schema 為空時不顯示 base 錯誤，使用者只會看到一個沒有任何
+            # 說明的「傳送」按鈕（2026-10-01 正式站實測）。
             _LOGGER.warning(
                 "User is not an owner/admin of workspace %s; cannot fetch the "
                 "tunnel token for %s %s",
@@ -585,32 +568,16 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 product_type,
                 instance_id,
             )
-            return self.async_show_form(
-                step_id=error_step,
-                data_schema=vol.Schema({}),
-                errors={"base": ERR_INSUFFICIENT_ROLE},
-            )
+            return self.async_abort(reason=ERR_INSUFFICIENT_ROLE)
         except AuthenticationError:
             _LOGGER.warning("Authentication failed while fetching tunnel token")
-            return self.async_show_form(
-                step_id=error_step,
-                data_schema=vol.Schema({}),
-                errors={"base": ERR_INVALID_AUTH},
-            )
+            return self.async_abort(reason=ERR_INVALID_AUTH)
         except (ApiError, aiohttp.ClientError):
             _LOGGER.exception("Failed to fetch tunnel token")
-            return self.async_show_form(
-                step_id=error_step,
-                data_schema=vol.Schema({}),
-                errors={"base": ERR_CANNOT_CONNECT},
-            )
+            return self.async_abort(reason=ERR_CANNOT_CONNECT)
         except Exception:
             _LOGGER.exception("Unexpected error fetching tunnel token")
-            return self.async_show_form(
-                step_id=error_step,
-                data_schema=vol.Schema({}),
-                errors={"base": ERR_UNKNOWN},
-            )
+            return self.async_abort(reason=ERR_UNKNOWN)
 
         data: dict[str, Any] = {
             **self._oauth_data,
