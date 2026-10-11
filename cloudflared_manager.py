@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 import logging
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 import aiohttp
 
 from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,6 +26,10 @@ _DEFAULT_INSTALL_DIR = ".woow_paas_smart_home"
 
 # Binary filename after extraction / download
 _BINARY_NAME = "cloudflared"
+
+# Restart an unexpectedly exited child, without overriding an explicit stop.
+_RESTART_RETRY_INITIAL = 30
+_RESTART_RETRY_MAX = 600
 
 # 下載 cloudflared（linux-amd64 約 39MB）**必須自帶 timeout**。
 # HA 的共用 client session 帶著它自己的預設 timeout，對這種大檔案不夠用：實機上
@@ -92,6 +98,9 @@ class CloudflaredManager:
         self._lock = asyncio.Lock()
         self._stdout_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
+        self._desired_token: str | None = None
+        self._shutdown_unsubscribe: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # Binary management
@@ -243,13 +252,77 @@ class CloudflaredManager:
 
         """
         async with self._lock:
-            return await self._start_tunnel_locked(tunnel_token)
+            if self.hass.is_stopping:
+                return False
+            self._desired_token = tunnel_token
+            if self._shutdown_unsubscribe is None:
+                self._shutdown_unsubscribe = self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STOP, self._async_stop_on_shutdown
+                )
+            try:
+                started = await self._start_tunnel_locked(tunnel_token)
+            except asyncio.CancelledError:
+                # A startup task can be cancelled after the child is spawned
+                # but before its initial readiness delay has finished.
+                self._desired_token = None
+                unsubscribe = self._shutdown_unsubscribe
+                self._shutdown_unsubscribe = None
+                if unsubscribe is not None:
+                    unsubscribe()
+                await self._stop_tunnel_locked()
+                raise
+            if started:
+                if self._watchdog_task is None or self._watchdog_task.done():
+                    self._watchdog_task = asyncio.create_task(
+                        self._async_watch_process(), name="woow_cloudflared_watchdog"
+                    )
+            return started
+
+    async def _async_stop_on_shutdown(self, _event: Any) -> None:
+        """Stop the child before HA exits, as well as on entry unload."""
+        # async_listen_once has already removed its subscription.
+        self._shutdown_unsubscribe = None
+        await self.stop_tunnel()
+
+    async def _async_watch_process(self) -> None:
+        """Resume only an explicitly requested tunnel after child failure."""
+        delay = _RESTART_RETRY_INITIAL
+        while self._desired_token is not None:
+            process = self._process
+            if process is not None and process.returncode is None:
+                await process.wait()
+            if self._desired_token is None or self.hass.is_stopping:
+                return
+            _LOGGER.warning(
+                "cloudflared is no longer running. Retrying in %s seconds.", delay
+            )
+            await asyncio.sleep(delay)
+            async with self._lock:
+                # Stop/unload/shutdown can win during backoff. A manual start
+                # can also have installed another child while we were waiting.
+                if self._desired_token is None or self.hass.is_stopping:
+                    return
+                if self.is_running:
+                    continue
+                try:
+                    started = await self._start_tunnel_locked(self._desired_token)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("cloudflared restart failed")
+                    started = False
+            delay = (
+                _RESTART_RETRY_INITIAL if started
+                else min(delay * 2, _RESTART_RETRY_MAX)
+            )
 
     async def _start_tunnel_locked(self, tunnel_token: str) -> bool:
         """Start tunnel (must be called while holding self._lock)."""
         if self.is_running:
             _LOGGER.warning("cloudflared tunnel is already running")
             return True
+
+        self._cancel_stream_tasks()
 
         if not self._binary_path.is_file():
             _LOGGER.error(
@@ -316,6 +389,14 @@ class CloudflaredManager:
         Returns ``True`` when the process has been stopped (or was not running).
         """
         async with self._lock:
+            self._desired_token = None
+            if self._shutdown_unsubscribe is not None:
+                self._shutdown_unsubscribe()
+                self._shutdown_unsubscribe = None
+            watchdog, self._watchdog_task = self._watchdog_task, None
+            if watchdog is not None and not watchdog.done():
+                watchdog.cancel()
+                await asyncio.gather(watchdog, return_exceptions=True)
             return await self._stop_tunnel_locked()
 
     async def _stop_tunnel_locked(self) -> bool:

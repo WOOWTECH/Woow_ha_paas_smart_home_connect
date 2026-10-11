@@ -8,6 +8,35 @@
 1. 和 woow-paas-platform 做 Oauth 串接，登入 woow-paas-platform
 2. 登入後，使用者會先選一個 workspace 再選一個 smart home ，然後就會回傳 Cloudflare Tunnel 讓 HA custom component Token 自動部署 cloudflared 進程。
 
+## Home Assistant 反向代理設定
+
+cloudflared 以本機 Home Assistant 為來源時，請先在 HA 的 `configuration.yaml`
+明確允許本機反向代理；`localhost` 可能使用 IPv4 或 IPv6：
+
+```yaml
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 127.0.0.1/32
+    - ::1/128
+```
+
+合併到既有 `http:` 區段後依 HA 提示重啟。來源使用其他容器／位址時，應改成
+實際代理的精確位址；不要為此信任整個 LAN。Tunnel 顯示 connected 僅表示通道
+已連線，仍需從對外入口確認 HA 登入頁與登入後的 REST／WebSocket 正常。
+
+## cloudflared 程序恢復
+
+成功啟動的受管程序若意外退出，整合會在30秒後使用同一份 tunnel token 重啟。
+重啟失敗會倍增等待，最多600秒；成功後回到30秒。手動停止、停用／卸載整合
+及 HA shutdown 會取消這個恢復意圖，因此不會因 watcher 而自動復活。
+首次 binary 安裝／啟動重試仍由既有 setup 流程處理。HA／PaaS 狀態使用輪詢，
+更新可能晚於程序重啟；實際可用性應另驗證對外登入與請求。
+
+獨立程序生命週期回歸可執行 `python scripts/test_watchdog.py`（需pytest及aiohttp）；HA wiring 使用
+stub，child／PID／signal／lock／取消則是真OS操作。完整原生 HA 故障驗收仍需
+在隔離實例進行。
+
 ## Security Access routes
 
 選擇 Security Access 產品時，每一條 application route 會對應一個獨立的 URL sensor，並隨 PaaS 端的 route 異動在 30 秒輪詢內自動增減（免 reload）。
