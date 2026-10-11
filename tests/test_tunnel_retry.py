@@ -137,3 +137,28 @@ async def test_cancellation_during_download_is_not_swallowed(
 
     with pytest.raises(asyncio.CancelledError):
         await _async_start_tunnel_with_retry(_entry(), mgr, "smart_home", 1)
+
+
+async def test_does_not_start_when_instance_deleted(slept: list[float]) -> None:
+    """平台上已刪除（status 404）⇒ 不再把 cloudflared 拉起來連已刪除的 tunnel。"""
+    mgr = _manager([True], [True])
+
+    await _async_start_tunnel_with_retry(
+        _entry(), mgr, "security_access", 1, lambda: True
+    )
+
+    mgr.ensure_binary.assert_not_awaited()
+    mgr.start_tunnel.assert_not_awaited()
+
+
+async def test_stops_retrying_once_instance_deleted(slept: list[float]) -> None:
+    """重試途中才被標成已刪除：下一輪就停手，不會在網路恢復後又把它拉起來。"""
+    mgr = _manager([False, True], [True])
+    deleted = iter([False, True])
+
+    await _async_start_tunnel_with_retry(
+        _entry(), mgr, "security_access", 1, lambda: next(deleted)
+    )
+
+    assert mgr.ensure_binary.await_count == 1
+    mgr.start_tunnel.assert_not_awaited()

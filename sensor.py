@@ -372,6 +372,12 @@ class TunnelUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
         self._attr_device_info = _device_info(entry)
 
     @property
+    def available(self) -> bool:
+        """Unavailable once the instance is deleted on the platform (no stale URL)."""
+        data = self.coordinator.data
+        return super().available and not (data is not None and data.instance_deleted)
+
+    @property
     def native_value(self) -> str | None:
         """Return the primary tunnel URL.
 

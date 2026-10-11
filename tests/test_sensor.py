@@ -26,6 +26,7 @@ from custom_components.woow_paas_smart_home.sensor import (
     McpConnectUrlSensor,
     McpStatusSensor,
     RouteUrlSensor,
+    TunnelUrlSensor,
     _async_remove_legacy_url_entity,
     _async_remove_mcp_entities,
     _async_sync_route_sensors,
@@ -376,3 +377,33 @@ def test_mcp_connect_url_is_not_an_enum_sensor() -> None:
     assert sensor.device_class is None
     assert sensor.options is None
     assert sensor.native_value.startswith("https://")
+
+
+def test_tunnel_url_sensor_unavailable_after_platform_deletion() -> None:
+    """平台上已刪除（status 404）⇒ SH 網址 sensor 變 unavailable，不顯示舊網址。"""
+    coord = _fake_coordinator([])
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.CONNECTED, subdomain_url="https://paas-sm-x.woowtech.io"
+    )
+    entry = _fake_entry()
+    entry.data = {CONF_PRODUCT_TYPE: PRODUCT_SMART_HOME}
+    sensor = TunnelUrlSensor(coord, entry)
+    assert sensor.available is True
+
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.DELETED, subdomain_url="", instance_deleted=True
+    )
+    assert sensor.available is False
+
+
+def test_route_sensors_unavailable_after_platform_deletion() -> None:
+    """404 的資料沒有任何路由 ⇒ 既有的「路由消失 → unavailable」接手。"""
+    coord = _fake_coordinator([RouteInfo(route_id="1", hostname="a.example.com")])
+    sensor = RouteUrlSensor(coord, _fake_entry(), "1", "a")
+    assert sensor.available is True
+
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.DELETED, subdomain_url="", instance_deleted=True
+    )
+    assert sensor.available is False
+    assert sensor.native_value is None

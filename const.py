@@ -31,7 +31,9 @@ class McpIntegrationState(StrEnum):
 DOMAIN = "woow_paas_smart_home"
 
 # --- API ---
-API_BASE_URL = "https://stg.woowtech.io"
+# 正式站。GitHub 是公開鏡像，照著安裝的人必須連到正式站；開發要連測試站時
+# 自己把這行改成 "https://stg.woowtech.io"（OAuth client 兩站都有登記）。
+API_BASE_URL = "https://aiot.woowtech.io"
 
 # API endpoint paths (Smart Home)
 API_PATH_WORKSPACES = "/api/smarthome/workspaces"
@@ -57,6 +59,8 @@ API_PATH_SA_ACCESS_STATUS = "/api/security-access/accesses/{access_id}/status"
 # OAuth2 endpoints
 OAUTH2_AUTHORIZE = "/oauth2/authorize"
 OAUTH2_TOKEN = "/oauth2/token"
+# RFC 7009 token revocation（public client：只送 client_id，不送 client_secret）。
+OAUTH2_REVOKE = "/oauth2/revoke"
 # OAuth2 Device Authorization Grant (RFC 8628) — used for HA Companion App
 # onboarding, where the redirect/window.open web flow can't complete in-app
 # (HA-wide limitation; see design doc §11). Browser onboarding keeps the web flow.
@@ -134,6 +138,18 @@ ERR_NO_WORKSPACES = "no_workspaces"
 ERR_NO_HOMES = "no_homes"
 ERR_NO_ACCESSES = "no_accesses"
 ERR_UNKNOWN = "unknown"
+ERR_INSUFFICIENT_ROLE = "insufficient_role"
+
+# Platform 403 body `error` when the user is a workspace member but not an
+# owner/admin — tunnel tokens are a setup-level permission on the platform.
+ERROR_INSUFFICIENT_ROLE = "insufficient_role"
+
+# Platform 404 body `error` when the smart home / security access itself does not
+# exist (ha_api ``_get_home_with_access`` / ``_get_sa_with_access``). Only a JSON
+# 404 carrying this code means "deleted"; any other 404 (Odoo routes not loaded
+# yet during a platform rollout, a Cloudflare error page, a reverse proxy) is
+# treated as transient.
+ERROR_NOT_FOUND = "Not Found"
 
 # --- Service names ---
 SERVICE_START_TUNNEL = "start_tunnel"
