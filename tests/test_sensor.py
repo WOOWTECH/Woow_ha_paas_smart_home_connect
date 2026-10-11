@@ -294,28 +294,23 @@ async def test_mcp_reconcile_noop_setup_when_unsubscribed(
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_connect_url_state_is_the_full_url() -> None:
-    """state 就是完整網址 = tunnel URL + /api/webhook/{webhook_id}；無資料時回 None。"""
+def test_mcp_connect_url_state_is_availability() -> None:
+    """Publish a short status; missing coordinator data remains unknown."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     sensor = McpConnectUrlSensor(coord, _mcp_entry())
 
-    assert sensor.native_value == (
-        "https://paas-sm-home/api/webhook/mcp_" + "a" * 32
-    )
+    assert sensor.native_value == "available"
 
     coord.data = None
     assert sensor.native_value is None
 
 
-def test_mcp_connect_url_attributes_expose_parts() -> None:
-    """屬性攤出組成部分（完整網址本身是 state，不重複放屬性）。"""
+def test_mcp_connect_url_attributes_never_expose_parts() -> None:
+    """Do not publish the webhook credential or endpoint components."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     attrs = McpConnectUrlSensor(coord, _mcp_entry()).extra_state_attributes
 
-    assert attrs == {
-        "webhook_id": "mcp_" + "a" * 32,
-        "base_url": "https://paas-sm-home",
-    }
+    assert attrs is None
 
 
 def test_mcp_connect_url_state_and_attributes_agree_on_absence() -> None:
@@ -325,7 +320,7 @@ def test_mcp_connect_url_state_and_attributes_agree_on_absence() -> None:
         _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING, subdomain_url=""),
     ):
         sensor = McpConnectUrlSensor(coord, _mcp_entry())
-        assert sensor.native_value is None
+        assert sensor.native_value == "unavailable"
         assert sensor.extra_state_attributes is None
 
 
@@ -338,45 +333,40 @@ def test_mcp_connect_url_unique_id() -> None:
     assert sensor.unique_id != McpStatusSensor(coord, _mcp_entry()).unique_id
 
 
-def test_mcp_connect_url_none_without_webhook_id() -> None:
-    """ha_mcp_tools 沒跑／local-only 模式（webhook_id 為 None）→ 不吐值。"""
+def test_mcp_connect_url_unavailable_without_webhook_id() -> None:
+    """An absent or local-only MCP endpoint has no usable remote URL."""
     coord = _mcp_coordinator(
         "ha_mcp_tools", McpIntegrationState.INSTALLED_NOT_RUNNING, webhook_id=None
     )
-    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value is None
+    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value == "unavailable"
 
 
-def test_mcp_connect_url_none_without_tunnel_url() -> None:
-    """tunnel 還沒起來（subdomain_url 為空）→ 不吐半截路徑，回 None。"""
+def test_mcp_connect_url_unavailable_without_tunnel_url() -> None:
+    """Do not publish an incomplete MCP endpoint."""
     coord = _mcp_coordinator(
         "ha_mcp_tools", McpIntegrationState.RUNNING, subdomain_url=""
     )
-    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value is None
+    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value == "unavailable"
 
 
-def test_mcp_connect_url_has_no_double_slash() -> None:
-    """subdomain_url 不帶尾斜線、路徑常數帶前斜線 → 接起來剛好一個斜線。"""
+def test_mcp_connect_url_state_has_no_url_or_webhook_id() -> None:
+    """Even a valid endpoint must not be stored in the state machine."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     url = McpConnectUrlSensor(coord, _mcp_entry()).native_value
 
     assert url is not None
-    assert "//api/webhook/" not in url
-    assert url.count("/api/webhook/") == 1
+    assert url == "available"
+    assert "mcp_" not in url
 
 
 def test_mcp_connect_url_is_not_an_enum_sensor() -> None:
-    """守衛：這顆不可以再被改成 ENUM／短標籤。
-
-    曾經為了讓裝置頁那一列的名稱完整顯示，把 state 改成 ``available``（顯示
-    "Open to copy"），結果使用者在 UI 上完全拿不到網址——這個 HA 版本的 more-info
-    沒有屬性區，屬性等於隱形。決議是**完整網址可見性優先**。這條測試釘住那個決議。
-    """
+    """Preserve the sensor type while enforcing the safe value contract."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     sensor = McpConnectUrlSensor(coord, _mcp_entry())
 
     assert sensor.device_class is None
     assert sensor.options is None
-    assert sensor.native_value.startswith("https://")
+    assert sensor.native_value == "available"
 
 
 def test_tunnel_url_sensor_unavailable_after_platform_deletion() -> None:

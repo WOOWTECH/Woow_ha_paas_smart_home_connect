@@ -42,57 +42,28 @@ stub，child／PID／signal／lock／取消則是真OS操作。完整原生 HA �
 選擇 Security Access 產品時，每一條 application route 會對應一個獨立的 URL sensor，並隨 PaaS 端的 route 異動在 30 秒輪詢內自動增減（免 reload）。
 
 ⚠️ **修改 route 的 hostname（subdomain prefix）等同重建**：PaaS 端的 hostname 是不可變的識別錨點，改名在後端是「刪除舊 route + 建立新 route」（產生新的 route id）。因此在 PaaS 改 route hostname 後，HA 端原本的 sensor 會變成 unavailable、並出現一個全新的 sensor，**該 route 的歷史資料與參照舊 entity_id 的 automation／dashboard 不會延續**。若只是調整 `service_url`、`is_protected` 等其他欄位則 route id 不變，sensor 會原地更新、保留歷史。
-## MCP URL
+## MCP 連線可用性與私密網址
 
-訂閱含 MCP 的方案（`/status` 的 `mcp == "ha_mcp_tools"`）時，除了 `MCP Tools` 狀態
-sensor 之外，還會有一顆 `MCP URL`，**state 就是 MCP client 要填的完整連線位址**：
+訂閱含 MCP 的方案時，`MCP Tools` 顯示本機整合的執行狀態，原 `MCP URL`
+實體改為顯示連線可用性：`available`、`unavailable`，尚無資料時為 `unknown`。
+`available` 表示已有 tunnel URL 與已載入 MCP 整合的 webhook 識別資料；
+它不代替對外 HTTP、身分驗證或工具權限的實際檢查。
 
-```
-https://{subdomain}.woowtech.io/api/webhook/mcp_{32 hex}
-```
+完整 MCP 網址包含 webhook 憑證，不再放進 HA sensor 的 state 或屬性。
+HA 管理員請到「設定 → 裝置與服務 → Home Assistant MCP → HA-MCP Server
+→ 設定」的原生 MCP 選項流程取得 **Connect URL(s)／Remote connect URL**，
+再交給已授權的 client。若網址不是本次 Smart Home Connect 的對外主機，
+在 MCP 的 External URL 選項填入該訂閱的 tunnel URL，儲存後重新開啟設定
+確認網址；不要將 webhook 憑證放回一般 sensor 或 dashboard。
+一般使用者可讀的 dashboard、模板與歷史頁面只能取得可用性狀態。
 
-由這張訂閱的 tunnel 網址，接上本機 `ha_mcp_tools` 生效中的 webhook id 組成。
-另帶兩個屬性 `webhook_id`、`base_url`（組成部分，方便自己排版）。
+既有實體的 unique_id 保留，因此已登錄的 entity_id 與裝置關係保留。
+原本把該 sensor 當作網址使用的 automation、template 或 client 設定需改用
+管理員提供的連線資料；這次更新改變的是 state 契約，不提供原網址的兼容欄位。
 
-三個條件都成立才有值，否則為 `unknown`：`ha_mcp_tools` 的 config entry 已載入、
-它的 `enable_webhook` 選項不是 `False`（local-only 模式下端點不存在）、tunnel 已連上。
-
-```yaml
-# 模板／自動化
-{{ states('sensor.<裝置>_mcp_url') }}
-```
-
-⚠️ **這個值是憑證。** `ha_mcp_tools` 預設 `webhook_auth=none`，網址本身就是進入 MCP
-server 的鑰匙。它會進 recorder 歷史，也會出現在任何顯示它的儀表板。
-
-### 桌面版裝置頁那一列會擠壓（已知取捨）
-
-**點開實體看詳細視窗是正常的**——主狀態區是 `word-break: break-word`，長網址會正常
-換行、可直接選取複製，手機版尤其清楚。有問題的只有桌面版**裝置頁診斷卡那一列**：
-網址會溢出、左邊的名稱被擠到只剩一個字。
-
-這是 Home Assistant 前端的版面限制，不是本整合能修的。量測如下：
-
-| 項目 | 量測值 |
-|---|---|
-| 裝置頁實體列的寬度 | 350px（**固定欄寬，與視窗大小無關**；800px 與 2000px 視窗量到的都是 350px） |
-| 網址最長的不可斷字串 | `{subdomain 尾段}.woowtech.io/api/webhook/mcp_{32 hex}` = 69 字元 / 520px |
-| 該列需要的寬度 | 584px（溢出 234px） |
-| 名稱欄實得寬度 | 24px |
-
-瀏覽器只在 `-` 後面斷行，而網址從最後一個 `-` 到結尾是一整段 69 字元；
-`hui-generic-entity-row` 的狀態又沒有 `overflow-wrap: anywhere`，那一段就撐開整列，
-把名稱欄（`flex: 1 1 30%` + `text-overflow: ellipsis`）壓到 24px。
-**縮短名稱救不了**——實測名稱改成單一字元，名稱欄仍然是 24px，因為它拿到多少寬度
-只取決於狀態的最小寬度。
-
-曾經改成短標籤（`Open to copy`）換取名稱完整，但那讓使用者在 UI 上**完全拿不到網址**：
-這個 HA 版本的 more-info 對話框沒有屬性區（只有狀態／歷史／logbook），屬性等於隱形。
-權衡後**以完整網址的可見性為優先**。
-
-想讓桌面那一列也不溢出，用主題或 card-mod 補上前端缺的那行 CSS（實測溢出歸零，
-名稱欄回到 62px）：
-
-```css
-hui-generic-entity-row { overflow-wrap: anywhere; }
-```
+更新只防止新的 state／attribute 憑證發布。舊 recorder、logbook、備份或
+已複製的網址不會因此清除或失效。正式更新前應由管理員盤點使用者，安排
+該 MCP endpoint 的憑證輪換，再依保存政策處理該實體的歷史與備份。
+本整合不會自動 purge 歷史、變更 HA-MCP 身分驗證或關閉其寫入工具。
+伺服器的 HA 管理員驗證、唯讀限制、套件隔離與外部 client OAuth 相容性
+仍須各自驗證。
