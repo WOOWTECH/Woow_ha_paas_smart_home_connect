@@ -404,7 +404,8 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: WoowConfigEntry
 ) -> bool:
     """Unload a Woow PaaS Smart Home config entry."""
-    await entry.runtime_data.tunnel_manager.stop_tunnel()
+    if not await entry.runtime_data.tunnel_manager.stop_tunnel():
+        return False
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

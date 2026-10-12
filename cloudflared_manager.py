@@ -387,6 +387,8 @@ class CloudflaredManager:
         Sends SIGTERM first, waits up to 5 seconds, then SIGKILL.
 
         Returns ``True`` when the process has been stopped (or was not running).
+        Returns ``False`` on a final wait timeout, retaining the process for
+        a later cleanup attempt.
         """
         async with self._lock:
             self._desired_token = None
@@ -444,6 +446,8 @@ class CloudflaredManager:
                     "SIGKILL; the process may still be running",
                     pid,
                 )
+                # Preserve ownership until a later stop can confirm cleanup.
+                return False
 
         self._process = None
         self._cancel_stream_tasks()

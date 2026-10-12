@@ -4,6 +4,7 @@ import importlib.util
 import json
 import logging
 import os
+import signal
 from pathlib import Path
 import sys
 import types
@@ -51,7 +52,7 @@ def manager_factory(monkeypatch, tmp_path):
     executable = tmp_path/'cloudflared'
     fail_range = tmp_path/'fail_range.json'
     executable.write_text("#!/usr/bin/env python3\n"+f'''
-import hashlib,json,os,pathlib,sys,time
+import hashlib,json,os,pathlib,signal,sys,time
 records=pathlib.Path({str(records)!r})
 count=len(records.read_text().splitlines())+1 if records.exists() else 1
 token=sys.argv[sys.argv.index('--token')+1]
@@ -60,6 +61,8 @@ with records.open('a') as stream:
 fail=pathlib.Path({str(fail_range)!r})
 if fail.exists() and count in json.loads(fail.read_text()):
  raise SystemExit(42)
+if pathlib.Path({str(tmp_path/'ignore_term')!r}).exists():
+ signal.signal(signal.SIGTERM,signal.SIG_IGN)
 while True: time.sleep(0.03)
 ''')
     executable.chmod(0o700)
@@ -200,5 +203,136 @@ def test_cancelled_startup_cleans_the_spawned_child(manager_factory):
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task,return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('initial_failure', ['immediate_exit', 'spawn_oserror'])
+def test_entry_retries_initial_failed_spawn_then_has_one_watcher(
+    manager_factory, monkeypatch, initial_failure,
+):
+    module, manager, bus, read, fail_range = manager_factory
+    recovered_count = 2 if initial_failure == 'immediate_exit' else 1
+    failed_spawns = []
+    if initial_failure == 'immediate_exit':
+        fail_range.write_text(json.dumps([1]))
+    else:
+        manager._binary_path.chmod(0o600)
+        real_spawn = asyncio.create_subprocess_exec
+
+        async def restore_permission_after_real_spawn_error(*args, **kwargs):
+            try:
+                return await real_spawn(*args, **kwargs)
+            except PermissionError as err:
+                # Exercise a genuine OS exec failure, then restore the external
+                # condition before the outer entry loop retries.
+                failed_spawns.append(err.errno)
+                manager._binary_path.chmod(0o700)
+                raise
+
+        monkeypatch.setattr(module.asyncio, 'create_subprocess_exec',
+                            restore_permission_after_real_spawn_error)
+    # Execute the exact entry bring-up function with HA wiring isolated. The
+    # rest of __init__.py requires HA and Python 3.13; do not rewrite this body.
+    entry_source = SOURCE.with_name('__init__.py').read_text()
+    start = entry_source.index('async def _async_start_tunnel_with_retry(')
+    end = entry_source.index('\n\nasync def async_setup_entry(', start)
+    namespace = {
+        'asyncio': asyncio,
+        '_LOGGER': logging.getLogger('entry_under_test'),
+        '_TUNNEL_RETRY_INITIAL': 0.03,
+        '_TUNNEL_RETRY_MAX': 0.05,
+        'CONF_TUNNEL_TOKEN': 'tunnel_token',
+    }
+    exec('from __future__ import annotations\n' + entry_source[start:end], namespace)
+    entry = types.SimpleNamespace(data={'tunnel_token': 'synthetic-watchdog-token'})
+
+    async def scenario():
+        try:
+            await asyncio.wait_for(
+                namespace['_async_start_tunnel_with_retry'](
+                    entry, manager, 'smart_home', 'synthetic-instance'
+                ),
+                timeout=8,
+            )
+            assert len(read()) == recovered_count and manager.is_running
+            if initial_failure == 'spawn_oserror':
+                assert failed_spawns == [13], 'the first exec must really fail in the OS'
+            assert len(bus.listeners) == 1
+            watchdog = manager._watchdog_task
+            assert watchdog is not None and not watchdog.done()
+            first = manager._process
+            first.kill()
+            await first.wait()
+            await wait_until(lambda: len(read()) == recovered_count + 1 and manager.is_running)
+            assert all(await asyncio.gather(*(
+                manager.start_tunnel('synthetic-watchdog-token') for _ in range(10)
+            )))
+            await asyncio.sleep(0.15)
+            assert len(read()) == recovered_count + 1
+            assert len({row['identity'] for row in read()}) == 1
+            assert manager._watchdog_task is watchdog
+            assert sum(task.get_name() == 'woow_cloudflared_watchdog'
+                       for task in asyncio.all_tasks()) == 1
+            assert await manager.stop_tunnel()
+            await asyncio.sleep(0.15)
+            assert not manager.is_running and len(read()) == recovered_count + 1
+            assert not bus.listeners
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='inherited pipe oracle uses /proc')
+def test_second_stop_timeout_retains_process_until_cleanup_can_finish(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+    (manager._install_dir / 'ignore_term').touch()
+
+    async def scenario():
+        process = helper = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            process = manager._process
+            # A directly owned real helper retains the managed child's stdout
+            # pipe after SIGKILL. Both children are reaped by this test; no
+            # orphan grandchild, fake Process/wait/kill or timeout injection.
+            writer = os.open(f'/proc/{process.pid}/fd/1', os.O_WRONLY)
+            try:
+                helper = await asyncio.create_subprocess_exec(
+                    sys.executable, '-c', 'import time; time.sleep(60)',
+                    stdout=writer, stderr=asyncio.subprocess.DEVNULL,
+                )
+            finally:
+                os.close(writer)
+            stopped = await manager.stop_tunnel()
+            assert not stopped and manager._process is process, (
+                'second wait timeout must report failure and retain cleanup ownership: '
+                f'stop={stopped}, handle_retained={manager._process is process}, '
+                f'child_returncode={process.returncode}, '
+                f'helper_running={helper.returncode is None}'
+            )
+            assert process.returncode == -signal.SIGKILL
+            assert helper.returncode is None
+            assert manager._desired_token is None
+            assert manager._watchdog_task is None
+            assert not bus.listeners
+            assert manager._stdout_task is not None
+            await asyncio.sleep(0.15)
+            assert len(read()) == 1, 'explicit stop must not restart during failed cleanup'
+            helper.terminate()
+            await helper.wait()
+            await asyncio.gather(manager._stdout_task, manager._stderr_task)
+            assert await manager.stop_tunnel()
+            assert manager._process is None and not manager.is_running
+            assert manager._stdout_task is None and manager._stderr_task is None
+            assert len(read()) == 1
+        finally:
+            if helper is not None and helper.returncode is None:
+                helper.kill()
+                await helper.wait()
+            if process is not None:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
             await manager.stop_tunnel()
     asyncio.run(scenario())
