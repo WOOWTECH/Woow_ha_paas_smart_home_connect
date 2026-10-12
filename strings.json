@@ -101,7 +101,7 @@
         }
       },
       "mcp_connect_url": {
-        "name": "MCP URL"
+        "name": "MCP connection availability"
       }
     }
   },

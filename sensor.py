@@ -170,36 +170,12 @@ class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
 
 class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
-    """MCP client 要填的完整遠端連線位址（tunnel URL + ha_mcp_tools 的 webhook 路徑）。
+    """MCP endpoint availability without exposing its credential-bearing URL.
 
-    state 就是那串網址本身。這是刻意的取捨——見下面「裝置頁的取捨」。
-
-    與 :class:`McpStatusSensor` 成對存在：狀態那顆回答「MCP 有沒有在跑」，這顆回答
-    「那要連去哪」。生命週期完全綁在一起（同一個訂閱閘門、同一輪 reconcile），因為
-    對使用者而言少了任一顆，另一顆都不完整。
-
-    值為 ``None``（UI 顯示 unknown）而非讓 entity 消失：tunnel 斷線、ha_mcp_tools
-    沒跑、local-only 模式這三種「暫時沒有 URL」都會復原，entity 消失會連帶丟掉歷史與
-    dashboard 參照；而且旁邊那顆狀態 sensor 已經說明了是哪一種原因。
-
-    **裝置頁的取捨（量測過，別再試著用縮短名稱解決）**：桌面版裝置頁的實體列固定
-    350px（與視窗大小無關），而這串網址從最後一個 ``-`` 到結尾是一整段 69 字元 /
-    520px 的不可斷字串——瀏覽器只在 ``-`` 後面斷行，``hui-generic-entity-row`` 的狀態
-    又沒有 ``overflow-wrap: anywhere``。那一段會撐開整列（需要 584px），把名稱欄
-    （``flex: 1 1 30%`` + ellipsis）壓到 24px 只剩一個字。實測把名稱改成單一字元也一樣是
-    24px——名稱欄拿到多少寬度只取決於狀態的最小寬度。
-
-    曾經改成短標籤（``available`` / "Open to copy"）換取名稱完整，但那讓使用者在 UI 上
-    完全拿不到網址：這個 HA 版本的 more-info 對話框沒有屬性區（只有狀態／歷史／
-    logbook），屬性等於隱形。**完整網址可見性優先**，所以 state 放回網址本身；
-    點開實體的詳細視窗，主狀態區是 ``word-break: break-word``，長網址會正常換行、
-    可直接選取複製（手機版尤其漂亮）。要讓桌面裝置頁那一列也不溢出，用主題或
-    card-mod 補一行 ``hui-generic-entity-row { overflow-wrap: anywhere; }``。
-
-    ⚠️ 這個值本身就是**憑證**——URL 裡的 webhook id 就是進入 MCP server 的鑰匙
-    （ha_mcp_tools 預設 ``webhook_auth=none``，密鑰即網址）。它會進 recorder 歷史、
-    也會出現在任何顯示它的 dashboard。這是刻意的取捨：使用者就是需要把它複製出去貼給
-    MCP client，跟 ha_mcp_tools 自己在設定畫面顯示 "Remote connect URL" 是同一個決定。
+    HA states are readable by ordinary users and may be recorded. Publish only
+    availability, retaining the existing unique_id and subscription lifecycle.
+    Administrators obtain the endpoint through HA-MCP's native options flow.
+    Previously recorded credentials require separate rotation/history handling.
     """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -217,26 +193,16 @@ class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        """Return the full MCP connect URL, or None when there is not a usable one."""
+        """Publish availability without exposing the credential-bearing URL."""
         data = self.coordinator.data
         if data is None:
             return None
-        return data.mcp_connect_url
+        return "available" if data.mcp_connect_url else "unavailable"
 
     @property
     def extra_state_attributes(self) -> dict[str, str] | None:
-        """完整連線位址與它的組成部分。
-
-        ``connect_url`` 擺第一個：它是使用者點開詳細視窗要找的東西，屬性區依序
-        顯示。``base_url`` 附上是為了讓人一眼看出這條路徑掛在哪個 tunnel 底下。
-        """
-        data = self.coordinator.data
-        if data is None or data.mcp_connect_url is None:
-            return None
-        return {
-            "webhook_id": data.mcp_webhook_id or "",
-            "base_url": data.subdomain_url,
-        }
+        """Endpoint credentials must never enter entity state attributes."""
+        return None
 
 
 @callback

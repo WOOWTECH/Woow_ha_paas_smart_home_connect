@@ -101,7 +101,7 @@
         }
       },
       "mcp_connect_url": {
-        "name": "MCP 網址"
+        "name": "MCP 連線可用性"
       }
     }
   },
