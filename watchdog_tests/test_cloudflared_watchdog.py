@@ -336,3 +336,101 @@ def test_second_stop_timeout_retains_process_until_cleanup_can_finish(manager_fa
                 await process.wait()
             await manager.stop_tunnel()
     asyncio.run(scenario())
+
+
+def test_exit_notifies_local_status_before_production_backoff(manager_factory, monkeypatch):
+    """A dead real child must publish stopped state before the unchanged 30s retry."""
+    module, manager, _, read, _ = manager_factory
+    monkeypatch.setattr(module, '_RESTART_RETRY_INITIAL', 30)
+    changes = []
+    # Set the observer slot directly to drive the exit path on the old code too;
+    # separate tests cover public registration and native setup wiring.
+    manager._state_change_callback = lambda: changes.append(manager.is_running)
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            changes.clear()
+            process = manager._process
+            process.kill()
+            await process.wait()
+            await wait_until(lambda: changes == [False], timeout=0.5)
+            assert not manager.is_running and len(read()) == 1
+            assert manager._watchdog_task is not None
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_successful_watchdog_spawn_notifies_running_without_poll(manager_factory):
+    """Both exit and successful replacement publish real local state."""
+    _, manager, _, read, _ = manager_factory
+    changes = []
+    manager._state_change_callback = lambda: changes.append(manager.is_running)
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            changes.clear()
+            process = manager._process
+            process.kill()
+            await process.wait()
+            await wait_until(lambda: changes == [False, True], timeout=4)
+            assert manager.is_running and len(read()) == 2
+            assert manager._process.pid != process.pid
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_public_listener_unsubscribe_preserves_stop_and_restart(manager_factory):
+    """Detached observers stay detached; old cleanup cannot remove a new observer."""
+    _, manager, _, read, _ = manager_factory
+    old_changes, changes = [], []
+    remove_old = manager.async_add_state_listener(lambda: old_changes.append(manager.is_running))
+    remove = manager.async_add_state_listener(lambda: changes.append(manager.is_running))
+    remove_old()
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            assert changes == [True] and old_changes == []
+            remove()
+            remove()  # native cleanup can be idempotent
+            process = manager._process
+            process.kill()
+            await process.wait()
+            await wait_until(lambda: len(read()) == 2 and manager.is_running)
+            # is_running becomes true as soon as spawn returns, before the
+            # existing 1s startup check notifies; wait for that check to finish.
+            await asyncio.sleep(1.1)
+            assert changes == [True] and old_changes == []
+            assert await manager.stop_tunnel()
+            await asyncio.sleep(0.15)
+            assert len(read()) == 2 and not manager.is_running
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_listener_failure_does_not_break_watchdog_or_stop(manager_factory):
+    """A UI observer cannot abandon the real managed child or its watchdog."""
+    _, manager, _, read, _ = manager_factory
+    def listener():
+        raise RuntimeError('synthetic observer failure')
+    remove = manager.async_add_state_listener(listener)
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            watchdog = manager._watchdog_task
+            process = manager._process
+            process.kill()
+            await process.wait()
+            await wait_until(lambda: len(read()) == 2 and manager.is_running)
+            await asyncio.sleep(1.1)
+            assert manager._watchdog_task is watchdog and not watchdog.done()
+        finally:
+            remove()
+            assert await manager.stop_tunnel()
+    asyncio.run(scenario())

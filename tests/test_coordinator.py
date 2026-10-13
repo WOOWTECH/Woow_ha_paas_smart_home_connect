@@ -6,6 +6,7 @@ and a MagicMock config entry, then drives _async_update_data() directly. The
 """
 from __future__ import annotations
 
+import asyncio
 import types
 from unittest.mock import AsyncMock, MagicMock
 
@@ -964,3 +965,84 @@ async def test_successful_poll_records_remote_status(hass: HomeAssistant) -> Non
     data = await coord._async_update_data()
 
     assert data.remote_status == "connected"
+
+
+@pytest.mark.parametrize("product_type", [PRODUCT_SMART_HOME, PRODUCT_SECURITY_ACCESS])
+@pytest.mark.parametrize("initial_running", [True, False], ids=["exit", "spawn"])
+async def test_inflight_status_poll_uses_current_local_state(
+    hass: HomeAssistant, product_type: str, initial_running: bool
+) -> None:
+    """A status response must not undo an exit/spawn notification during I/O."""
+    started, release = asyncio.Event(), asyncio.Event()
+    async def remote_status(_instance_id):
+        started.set()
+        await release.wait()
+        return {"tunnel_status": "connected", "routes": []}
+
+    api = MagicMock()
+    method = AsyncMock(side_effect=remote_status)
+    if product_type == PRODUCT_SECURITY_ACCESS:
+        api.get_access_status = method
+    else:
+        api.get_home_status = method
+    coord = _coordinator(hass, api=api, running=initial_running, product_type=product_type)
+    coord.data = TunnelStatusData(
+        status=TunnelCoordinator._merge_status(initial_running, "connected"),
+        subdomain_url="https://fixture.invalid", remote_status="connected",
+    )
+    expected = TunnelStatus.ERROR if initial_running else TunnelStatus.CONNECTED
+    pending = asyncio.create_task(coord._async_update_data())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        coord._tunnel_manager.is_running = not initial_running
+        coord.async_update_local_status()
+        assert coord.data.status is expected
+        release.set()
+        data = await asyncio.wait_for(pending, timeout=1)
+        coord.async_set_updated_data(data)
+        assert coord.data.status is expected
+        method.assert_awaited_once_with(6)
+    finally:
+        release.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_inflight_mcp_detection_uses_current_local_state(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Read process state after the local MCP await as well as remote status I/O."""
+    started, release = asyncio.Event(), asyncio.Event()
+    async def detect(_hass):
+        started.set()
+        await release.wait()
+        return McpIntegrationState.NOT_INSTALLED
+
+    monkeypatch.setattr(
+        "custom_components.woow_paas_smart_home.coordinator.async_detect_ha_mcp_state",
+        detect,
+    )
+    api = MagicMock()
+    api.get_home_status = AsyncMock(return_value={"tunnel_status": "connected", "mcp": "ha_mcp_tools"})
+    coord = _coordinator(hass, api=api, running=True, product_type=PRODUCT_SMART_HOME)
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.CONNECTED, subdomain_url="https://fixture.invalid",
+        remote_status="connected",
+    )
+    pending = asyncio.create_task(coord._async_update_data())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        coord._tunnel_manager.is_running = False
+        coord.async_update_local_status()
+        assert coord.data.status is TunnelStatus.ERROR
+        release.set()
+        data = await asyncio.wait_for(pending, timeout=1)
+        coord.async_set_updated_data(data)
+        assert coord.data.status is TunnelStatus.ERROR
+        api.get_home_status.assert_awaited_once_with(6)
+    finally:
+        release.set()
+        if not pending.done():
+            pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)

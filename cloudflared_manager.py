@@ -101,6 +101,7 @@ class CloudflaredManager:
         self._watchdog_task: asyncio.Task | None = None
         self._desired_token: str | None = None
         self._shutdown_unsubscribe: Callable[[], None] | None = None
+        self._state_change_callback: Callable[[], None] | None = None
 
     # ------------------------------------------------------------------
     # Binary management
@@ -242,6 +243,26 @@ class CloudflaredManager:
     # Tunnel lifecycle
     # ------------------------------------------------------------------
 
+    def async_add_state_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """Register the single local-status listener and return its unsubscribe."""
+        self._state_change_callback = listener
+
+        def unsubscribe() -> None:
+            if self._state_change_callback is listener:
+                self._state_change_callback = None
+
+        return unsubscribe
+
+    def _notify_state_change(self) -> None:
+        """Publish local state on the event loop without polling the provider."""
+        if self._state_change_callback is not None:
+            try:
+                self._state_change_callback()
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Failed to update local tunnel status")
+
     async def start_tunnel(self, tunnel_token: str) -> bool:
         """Start cloudflared tunnel with the given token.
 
@@ -293,6 +314,7 @@ class CloudflaredManager:
                 await process.wait()
             if self._desired_token is None or self.hass.is_stopping:
                 return
+            self._notify_state_change()
             _LOGGER.warning(
                 "cloudflared is no longer running. Retrying in %s seconds.", delay
             )
@@ -379,6 +401,7 @@ class CloudflaredManager:
             self._process = None
             return False
         else:
+            self._notify_state_change()
             return True
 
     async def stop_tunnel(self) -> bool:

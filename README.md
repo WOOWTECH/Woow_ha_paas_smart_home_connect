@@ -30,8 +30,9 @@ http:
 成功啟動的受管程序若意外退出，整合會在30秒後使用同一份 tunnel token 重啟。
 重啟失敗會倍增等待，最多600秒；成功後回到30秒。手動停止、停用／卸載整合
 及 HA shutdown 會取消這個恢復意圖，因此不會因 watcher 而自動復活。
-首次 binary 安裝／啟動重試仍由既有 setup 流程處理。HA／PaaS 狀態使用輪詢，
-更新可能晚於程序重啟；實際可用性應另驗證對外登入與請求。
+首次 binary 安裝／啟動重試仍由既有 setup 流程處理。受管程序退出或成功啟動時，
+本機狀態會立即通知 sensor；PaaS 遠端狀態仍使用既有輪詢，不增加請求或縮短重試。
+實際可用性應另驗證對外登入與請求。
 
 獨立程序生命週期回歸可執行 `python scripts/test_watchdog.py`（需pytest及aiohttp）；HA wiring 使用
 stub，child／PID／signal／lock／取消則是真OS操作。完整原生 HA 故障驗收仍需
