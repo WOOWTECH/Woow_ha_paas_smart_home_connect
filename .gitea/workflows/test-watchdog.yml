@@ -2,7 +2,11 @@ name: watchdog-regression
 
 on:
   pull_request:
-    branches: [main, fix/shc-immediate-exit-status-20261013]
+    branches:
+      - main
+      - fix/shc-immediate-exit-status-20261013
+      # 疊在 #26 上的撤權 PR 以它為 base，也要跑同一道閘門。
+      - fix/shc-serialized-connector-reset-20261014
   push:
     branches: [main]
   workflow_dispatch:
@@ -42,6 +46,7 @@ jobs:
           for name in filter(None, paths):
               ast.parse(Path(name).read_text(), filename=name)
           PY
+      # 同一步也跑 access_revocation 的可攜式測試（假 manager＋真 manager/假子行程）。
       - name: Exercise real process lifecycle and exit notifications
         env:
           PYTHONDONTWRITEBYTECODE: "1"

@@ -10,12 +10,20 @@ import tempfile
 def main():
     root = Path(__file__).resolve().parents[1]
     source = os.environ.get('SHC_MANAGER_SOURCE', str(root / 'cloudflared_manager.py'))
+    revocation = os.environ.get(
+        'SHC_ACCESS_REVOCATION_SOURCE', str(root / 'access_revocation.py'))
     with tempfile.TemporaryDirectory(prefix='shc-watchdog-tests-') as directory:
-        target = Path(directory) / 'test_cloudflared_watchdog.py'
-        shutil.copyfile(root / 'watchdog_tests' / target.name, target)
-        environment = dict(os.environ, SHC_MANAGER_SOURCE=source)
+        targets = []
+        for name in ('test_cloudflared_watchdog.py', 'test_access_revocation.py'):
+            target = Path(directory) / name
+            shutil.copyfile(root / 'watchdog_tests' / name, target)
+            targets.append(str(target))
+        environment = dict(
+            os.environ, SHC_MANAGER_SOURCE=source,
+            SHC_ACCESS_REVOCATION_SOURCE=revocation,
+        )
         return subprocess.call(
-            [sys.executable, '-m', 'pytest', '-q', str(target)],
+            [sys.executable, '-m', 'pytest', '-q', *targets],
             cwd=directory, env=environment,
         )
 

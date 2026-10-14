@@ -34,7 +34,8 @@ async def _check_unload(tmp_path, stopped: bool, platform_result: bool) -> None:
     unsubscribe = MagicMock()
     runtime = WoowRuntimeData(
         api_client=MagicMock(), tunnel_manager=manager,
-        coordinator=MagicMock(), session=MagicMock(),
+        coordinator=MagicMock(async_cancel_access_reset=AsyncMock()),
+        session=MagicMock(),
         unsub_tunnel_status=unsubscribe,
     )
     entry.runtime_data = runtime

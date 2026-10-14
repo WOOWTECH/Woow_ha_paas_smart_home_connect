@@ -408,6 +408,9 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: WoowConfigEntry
 ) -> bool:
     """Unload a Woow PaaS Smart Home config entry."""
+    # 先收掉撤權 reset（可能正在等傳播或持有 manager 的鎖準備重啟 connector）：
+    # 取消會走 reset 自己的收尾，不必等它完成一次重啟再被下面的 stop_tunnel 停掉。
+    await entry.runtime_data.coordinator.async_cancel_access_reset()
     if not await entry.runtime_data.tunnel_manager.stop_tunnel():
         return False
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
