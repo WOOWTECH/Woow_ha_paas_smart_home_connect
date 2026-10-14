@@ -284,18 +284,42 @@ def test_entry_retries_initial_failed_spawn_then_has_one_watcher(
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='inherited pipe oracle uses /proc')
-def test_second_stop_timeout_retains_process_until_cleanup_can_finish(manager_factory):
+@pytest.mark.parametrize('defer_sigkill', [False, True])
+def test_stop_cleanup_matches_native_wait_outcome(manager_factory, monkeypatch, defer_sigkill):
     _, manager, bus, read, _ = manager_factory
     (manager._install_dir / 'ignore_term').touch()
 
     async def scenario():
         process = helper = None
+        kill_dispatch = None
+        real_kill = None
         try:
             assert await manager.start_tunnel('synthetic-watchdog-token')
             process = manager._process
+            real_kill = process.kill
+            native_wait = process.wait
+            watchdog_task = manager._watchdog_task
+            wait_entry_codes = []
+
+            async def observed_wait():
+                # Observe only stop's waits, delegating to the unchanged native
+                # method. The concurrently starting watchdog also waits here.
+                if asyncio.current_task() is not watchdog_task:
+                    wait_entry_codes.append(process.returncode)
+                return await native_wait()
+
+            monkeypatch.setattr(process, 'wait', observed_wait)
+            if defer_sigkill:
+                # Register the real wait before dispatching the real SIGKILL.
+                # Otherwise CPython may observe exit first and legitimately
+                # return immediately despite an inherited pipe remaining open.
+                def dispatch_kill():
+                    nonlocal kill_dispatch
+                    kill_dispatch = asyncio.get_running_loop().call_later(0.05, real_kill)
+                monkeypatch.setattr(process, 'kill', dispatch_kill)
             # A directly owned real helper retains the managed child's stdout
             # pipe after SIGKILL. Both children are reaped by this test; no
-            # orphan grandchild, fake Process/wait/kill or timeout injection.
+            # orphan grandchild, fake Process/wait result or timeout injection.
             writer = os.open(f'/proc/{process.pid}/fd/1', os.O_WRONLY)
             try:
                 helper = await asyncio.create_subprocess_exec(
@@ -305,34 +329,45 @@ def test_second_stop_timeout_retains_process_until_cleanup_can_finish(manager_fa
             finally:
                 os.close(writer)
             stopped = await manager.stop_tunnel()
-            assert not stopped and manager._process is process, (
-                'second wait timeout must report failure and retain cleanup ownership: '
+            assert len(wait_entry_codes) == 2
+            pending_wait = wait_entry_codes[1] is None
+            if defer_sigkill:
+                assert pending_wait, 'controlled SIGKILL must exercise the real pending wait'
+            assert stopped is (not pending_wait), (
+                'cleanup must match native wait outcome: '
                 f'stop={stopped}, handle_retained={manager._process is process}, '
                 f'child_returncode={process.returncode}, '
-                f'helper_running={helper.returncode is None}'
+                f'helper_running={helper.returncode is None}, wait_entry_codes={wait_entry_codes}'
             )
+            assert manager._process is (process if pending_wait else None)
             assert process.returncode == -signal.SIGKILL
             assert helper.returncode is None
             assert manager._desired_token is None
             assert manager._watchdog_task is None
             assert not bus.listeners
-            assert manager._stdout_task is not None
+            if pending_wait:
+                assert manager._stdout_task is not None
+            else:
+                assert manager._stdout_task is None and manager._stderr_task is None
             await asyncio.sleep(0.15)
             assert len(read()) == 1, 'explicit stop must not restart during failed cleanup'
             helper.terminate()
             await helper.wait()
-            await asyncio.gather(manager._stdout_task, manager._stderr_task)
+            if pending_wait:
+                await asyncio.gather(manager._stdout_task, manager._stderr_task)
             assert await manager.stop_tunnel()
             assert manager._process is None and not manager.is_running
             assert manager._stdout_task is None and manager._stderr_task is None
             assert len(read()) == 1
         finally:
+            if kill_dispatch is not None:
+                kill_dispatch.cancel()
             if helper is not None and helper.returncode is None:
                 helper.kill()
                 await helper.wait()
             if process is not None:
                 if process.returncode is None:
-                    process.kill()
+                    real_kill()
                 await process.wait()
             await manager.stop_tunnel()
     asyncio.run(scenario())
