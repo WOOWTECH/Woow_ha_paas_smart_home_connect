@@ -568,12 +568,56 @@ def test_reset_shutdown_during_replacement_reports_no_restart(manager_factory):
     asyncio.run(scenario())
 
 
+_WAIT_BLOCKS_ON_INHERITED_PIPE: bool | None = None
+
+
+def _wait_blocks_on_inherited_pipe() -> bool:
+    """這個 CPython 的 Process.wait() 會不會等被繼承的 pipe 關閉。
+
+    3.13.12 會等（子程序已死、pipe 還被別人開著時 wait 卡住）；3.13.15 起
+    子程序一結束就返回。用真子程序實測一次，不靠版本號判斷。
+    """
+    global _WAIT_BLOCKS_ON_INHERITED_PIPE
+    if _WAIT_BLOCKS_ON_INHERITED_PIPE is None:
+        async def probe() -> bool:
+            child = await asyncio.create_subprocess_exec(
+                sys.executable, '-c', 'import time; time.sleep(60)',
+                stdout=asyncio.subprocess.PIPE,
+            )
+            writer = os.open(f'/proc/{child.pid}/fd/1', os.O_WRONLY)
+            try:
+                holder = await asyncio.create_subprocess_exec(
+                    sys.executable, '-c', 'import time; time.sleep(60)',
+                    stdout=writer, stderr=asyncio.subprocess.DEVNULL,
+                )
+            finally:
+                os.close(writer)
+            try:
+                child.kill()
+                try:
+                    await asyncio.wait_for(child.wait(), 2)
+                    return False
+                except asyncio.TimeoutError:
+                    return True
+            finally:
+                holder.kill()
+                await holder.wait()
+                await child.wait()
+        _WAIT_BLOCKS_ON_INHERITED_PIPE = asyncio.run(probe())
+    return _WAIT_BLOCKS_ON_INHERITED_PIPE
+
+
 @pytest.mark.skipif(sys.platform != 'linux', reason='inherited pipe oracle uses /proc')
 @pytest.mark.parametrize('kill_delay', [0.05, 60])
 @pytest.mark.parametrize('cancel_reset', [False, True])
 def test_reset_timeout_retains_owner_and_blocks_manual_replacement(manager_factory, monkeypatch, kill_delay, cancel_reset):
     _, manager, bus, read, _ = manager_factory
     (manager._install_dir / 'ignore_term').touch()
+    if kill_delay < 1 and not _wait_blocks_on_inherited_pipe():
+        # SIGKILL 送達後這版 CPython 的 wait 立即返回，reset 會確認切斷並重啟，
+        # 不存在「已送 SIGKILL 但最終 wait 逾時」這條路；逾時保留所有權改由
+        # kill_delay=60（SIGKILL 不送達）那組涵蓋。
+        pytest.skip('this CPython returns Process.wait() on exit despite an inherited pipe')
 
     async def scenario():
         process = helper = dispatch = reset = None
