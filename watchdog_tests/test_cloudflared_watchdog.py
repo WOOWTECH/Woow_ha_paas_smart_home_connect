@@ -300,12 +300,18 @@ def test_stop_cleanup_matches_native_wait_outcome(manager_factory, monkeypatch, 
             native_wait = process.wait
             watchdog_task = manager._watchdog_task
             wait_entry_codes = []
+            wait_completed = []
 
             async def observed_wait():
                 # Observe only stop's waits, delegating to the unchanged native
                 # method. The concurrently starting watchdog also waits here.
                 if asyncio.current_task() is not watchdog_task:
                     wait_entry_codes.append(process.returncode)
+                    slot = len(wait_completed)
+                    wait_completed.append(False)
+                    result = await native_wait()
+                    wait_completed[slot] = True
+                    return result
                 return await native_wait()
 
             monkeypatch.setattr(process, 'wait', observed_wait)
@@ -330,9 +336,13 @@ def test_stop_cleanup_matches_native_wait_outcome(manager_factory, monkeypatch, 
                 os.close(writer)
             stopped = await manager.stop_tunnel()
             assert len(wait_entry_codes) == 2
-            pending_wait = wait_entry_codes[1] is None
+            # 判準是 native wait 實際有沒有在 stop 的期限內返回，不是進入時的
+            # returncode：CPython 3.13.15 起子程序結束就讓 wait() 返回，不再等被
+            # 繼承的 pipe 關閉（3.13.12 仍會等）。兩種行為 stop 都必須如實回報。
+            pending_wait = not wait_completed[1]
             if defer_sigkill:
-                assert pending_wait, 'controlled SIGKILL must exercise the real pending wait'
+                assert wait_entry_codes[1] is None, (
+                    'controlled SIGKILL must register the real wait before exit')
             assert stopped is (not pending_wait), (
                 'cleanup must match native wait outcome: '
                 f'stop={stopped}, handle_retained={manager._process is process}, '
