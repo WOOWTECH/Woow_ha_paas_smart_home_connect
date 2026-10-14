@@ -306,14 +306,15 @@ class TunnelStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
         return self.coordinator.data.status
 
     @property
-    def extra_state_attributes(self) -> dict[str, str] | None:
+    def extra_state_attributes(self) -> dict[str, object] | None:
         """For security access, expose product type and the access state.
 
-        Smart home entities keep their previous behavior (no extra attributes).
+        Smart home：平台有帶 access_revision 時，公開撤權版本／已套用版本／最近一次
+        reset 結果（時間＋兩個布林，不含 token）；舊平台維持原行為（None）。
         """
         if self._product_type != PRODUCT_SECURITY_ACCESS:
-            return None
-        attrs: dict[str, str] = {"product_type": self._product_type}
+            return self.coordinator.access_revision_attributes
+        attrs: dict[str, object] = {"product_type": self._product_type}
         data = self.coordinator.data
         if data is not None and data.state is not None:
             attrs["state"] = data.state

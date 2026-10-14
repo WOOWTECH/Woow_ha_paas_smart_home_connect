@@ -576,6 +576,15 @@ class CloudflaredManager:
         """Check if cloudflared process is alive (non-blocking)."""
         return self._process is not None and self._process.returncode is None
 
+    @property
+    def has_cutoff_target(self) -> bool:
+        """是否有連線可斷：仍要求執行（含 watchdog 退避中），或仍持有子行程.
+
+        兩者皆無＝使用者手動停止或從未啟動，reset 沒有東西可切。持有未驗證退出
+        的子行程時仍回 True，讓撤權重試走 reset 的驗證停止。唯讀，不碰 token。
+        """
+        return self._desired_token is not None or self._process is not None
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

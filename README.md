@@ -38,6 +38,25 @@ http:
 stub，child／PID／signal／lock／取消則是真OS操作。完整原生 HA 故障驗收仍需
 在隔離實例進行。
 
+## Smart Home 自動撤權（access_revision）
+
+平台在 Cloudflare Access 收緊某條受保護 route（例如移除成員）後，會把 home
+狀態的 `access_revision` 往前推。HA 只在**成功**的 Smart Home 狀態輪詢讀這個
+欄位：第一次看到當作基準；之後數值改變（含變小）就等 5 秒讓 Cloudflare 傳播，
+再於背景呼叫 `reset_tunnel()` 斷線重連，讓既有連線全部重新經過 Access。
+**同一個家庭所有遠端連線會短暫中斷**。執行中又有新版本會合併成一次、完成後若仍
+落後再跑一次；未確認舊 connector 退出或發生例外則不前進，之後的輪詢以 30 秒起、
+最多 300 秒的退避重試。手動停止隧道時沒有連線可斷，直接記為已套用。
+
+tunnel status sensor 會帶 `access_revision`、`access_revision_applied` 與
+`last_access_reset`（時間、`cutoff_verified`、`restarted`）；不含任何 token。
+舊平台不帶欄位或型別不對時完全不動作，attributes 維持原樣。
+
+限制：平台連不上時 HA 看不到新版本（沒有 lease）；撤權結果不回報平台；
+Security Access 尚未接上；斷線後若新 connector 起不來，需手動 `start_tunnel`
+或重載整合。`cutoff_verified` 只代表本機舊 connector 已退出，不代表 Cloudflare
+端全域撤銷。
+
 ## Security Access routes
 
 選擇 Security Access 產品時，每一條 application route 會對應一個獨立的 URL sensor，並隨 PaaS 端的 route 異動在 30 秒輪詢內自動增減（免 reload）。
@@ -83,7 +102,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv-watchdog/bin/python -B scripts/test_watch
 Use this runner instead of collecting `watchdog_tests` directly from the
 integration root: direct collection imports the entire HA integration. The
 runner copies the unchanged tests to a temporary directory and loads this
-checkout's `cloudflared_manager.py`. It exercises real processes, signals,
+checkout's `cloudflared_manager.py` and `access_revocation.py`. It exercises real processes, signals,
 locks and cancellation with synthetic credentials and stubbed HA wiring.
 It does not establish native HA integration, live Cloudflare, or production
 acceptance; those remain separate tests.
