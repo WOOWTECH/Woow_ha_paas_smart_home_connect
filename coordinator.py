@@ -206,7 +206,6 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
 
     async def _async_update_data(self) -> TunnelStatusData:
         """Fetch tunnel status by merging local process state and remote API."""
-        local_running = self._tunnel_manager.is_running
         is_sa = self._product_type == PRODUCT_SECURITY_ACCESS
 
         # Attempt remote API call; use None as fallback on transient failure.
@@ -295,9 +294,6 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         else:
             subdomain_url = f"https://{self._subdomain}" if self._subdomain else ""
 
-        # Merge local + remote status
-        status = self._merge_status(local_running, remote_status)
-
         # #270：三態偵測。僅 Smart Home 且有 MCP 訂閱時才跑（避開無訂閱 home 的
         # executor 呼叫）。偵測與雲端 API 無關，故即使本輪 API 失敗（mcp 保留上一輪值）
         # 仍會重算當前本地實況。全程包 try/except：偵測自身的意外例外不可讓整個
@@ -316,6 +312,10 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             # 無訂閱（含 SA、降頻退訂）→ 三態與 connect URL 都無意義。
             mcp_integration_state = None
             mcp_webhook_id = None
+
+        # Read local state after all awaited work, so an in-flight poll cannot
+        # overwrite an exit/spawn notification with an older process snapshot.
+        status = self._merge_status(self._tunnel_manager.is_running, remote_status)
 
         return TunnelStatusData(
             status=status,

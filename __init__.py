@@ -90,6 +90,7 @@ class WoowRuntimeData:
     tunnel_manager: CloudflaredManager
     coordinator: TunnelCoordinator
     session: OAuth2Session
+    unsub_tunnel_status: Callable[[], None] | None = None
 
 
 def _find_entry_and_data(
@@ -379,6 +380,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
         tunnel_manager=tunnel_manager,
         coordinator=coordinator,
         session=session,
+        unsub_tunnel_status=tunnel_manager.async_add_state_listener(
+            coordinator.async_update_local_status
+        ),
     )
 
     # Start tunnel in background (non-blocking)
@@ -406,7 +410,10 @@ async def async_unload_entry(
     """Unload a Woow PaaS Smart Home config entry."""
     if not await entry.runtime_data.tunnel_manager.stop_tunnel():
         return False
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded and entry.runtime_data.unsub_tunnel_status is not None:
+        entry.runtime_data.unsub_tunnel_status()
+    return unloaded
 
 
 async def async_remove_entry(

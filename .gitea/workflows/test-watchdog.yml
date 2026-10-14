@@ -1,0 +1,49 @@
+name: watchdog-regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchdog-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install isolated watchdog test dependencies
+        run: |
+          python -m venv .venv-watchdog-ci
+          .venv-watchdog-ci/bin/python -m pip install -r scripts/requirements-watchdog.txt
+      - name: Parse tracked Python source
+        run: |
+          .venv-watchdog-ci/bin/python - <<'PY'
+          import ast
+          from pathlib import Path
+          import subprocess
+
+          paths = subprocess.check_output(
+              ["git", "ls-files", "-z", "*.py"]
+          ).decode().split("\0")
+          for name in filter(None, paths):
+              ast.parse(Path(name).read_text(), filename=name)
+          PY
+      - name: Exercise real process lifecycle and exit notifications
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+        run: .venv-watchdog-ci/bin/python -B scripts/test_watchdog.py

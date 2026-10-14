@@ -1,0 +1,6 @@
+# Dependencies for the offline HACS 2.0.5 metadata harness (Python 3.13).
+# Supply the HACS source checkout separately with --hacs-source.
+aiogithubapi==26.0.0
+attrs==26.1.0
+awesomeversion==25.8.0
+voluptuous==0.16.0

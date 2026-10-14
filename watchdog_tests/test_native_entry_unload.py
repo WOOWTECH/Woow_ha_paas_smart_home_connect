@@ -31,9 +31,11 @@ async def _check_unload(tmp_path, stopped: bool, platform_result: bool) -> None:
     )
     manager = MagicMock()
     manager.stop_tunnel = AsyncMock(return_value=stopped)
+    unsubscribe = MagicMock()
     runtime = WoowRuntimeData(
         api_client=MagicMock(), tunnel_manager=manager,
         coordinator=MagicMock(), session=MagicMock(),
+        unsub_tunnel_status=unsubscribe,
     )
     entry.runtime_data = runtime
     try:
@@ -48,6 +50,10 @@ async def _check_unload(tmp_path, stopped: bool, platform_result: bool) -> None:
         else:
             unload.assert_not_awaited()
         assert entry.runtime_data is runtime
+        if stopped and platform_result:
+            unsubscribe.assert_called_once_with()
+        else:
+            unsubscribe.assert_not_called()
     finally:
         await hass.async_stop(force=True)
 
