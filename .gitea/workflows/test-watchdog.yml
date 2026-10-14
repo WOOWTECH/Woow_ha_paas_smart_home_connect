@@ -2,7 +2,7 @@ name: watchdog-regression
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, fix/shc-immediate-exit-status-20261013]
   push:
     branches: [main]
   workflow_dispatch:
@@ -47,3 +47,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
         run: .venv-watchdog-ci/bin/python -B scripts/test_watchdog.py
+      - name: Verify real loopback WebSocket cutoff and recovery
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: .venv-watchdog-ci/bin/python -B scripts/probe_connector_transport.py --output /tmp/shc-connector-transport-${{ github.run_id }}

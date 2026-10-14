@@ -61,6 +61,12 @@ with records.open('a') as stream:
 fail=pathlib.Path({str(fail_range)!r})
 if fail.exists() and count in json.loads(fail.read_text()):
  raise SystemExit(42)
+gate=pathlib.Path({str(tmp_path/'term_gate')!r})
+def gated_term(*_):
+ pathlib.Path({str(tmp_path/'term_received')!r}).touch()
+ while gate.exists(): time.sleep(0.01)
+ raise SystemExit(0)
+if gate.exists(): signal.signal(signal.SIGTERM,gated_term)
 if pathlib.Path({str(tmp_path/'ignore_term')!r}).exists():
  signal.signal(signal.SIGTERM,signal.SIG_IGN)
 while True: time.sleep(0.03)
@@ -468,4 +474,529 @@ def test_listener_failure_does_not_break_watchdog_or_stop(manager_factory):
         finally:
             remove()
             assert await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_verifies_exit_then_restarts_same_identity(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            receipt = await manager.reset_tunnel()
+            assert receipt.cutoff_verified is True and receipt.restarted is True
+            assert first.returncode is not None
+            assert manager.is_running and manager._process.pid != first.pid
+            assert len(read()) == 2
+            assert read()[0]['identity'] == read()[1]['identity']
+            assert len(bus.listeners) == 1
+            with pytest.raises(AttributeError):
+                receipt.cutoff_verified = False
+            assert 'synthetic-watchdog-token' not in repr(receipt)
+            replacement = manager._process
+            replacement.kill()
+            await replacement.wait()
+            await wait_until(lambda: len(read()) == 3 and manager.is_running)
+            assert manager._process.pid != replacement.pid
+            assert len({row['identity'] for row in read()}) == 1
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_cancelled_replacement_is_stopped_without_recovery(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+
+    async def scenario():
+        task = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            task = asyncio.create_task(manager.reset_tunnel())
+            await wait_until(lambda: len(read()) == 2 and manager.is_running)
+            replacement = manager._process
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0.15)
+            assert first.returncode is not None and replacement.returncode is not None
+            assert not manager.is_running and len(read()) == 2
+            assert manager._desired_token is None and not bus.listeners
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_shutdown_during_replacement_reports_no_restart(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+
+    async def scenario():
+        reset = shutdown = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            reset = asyncio.create_task(manager.reset_tunnel())
+            await wait_until(lambda: len(read()) == 2 and manager.is_running)
+            replacement = manager._process
+            manager.hass.is_stopping = True
+            shutdown = asyncio.create_task(bus.shutdown())
+            receipt = await reset
+            await shutdown
+            assert receipt.cutoff_verified is True and receipt.restarted is False
+            assert first.returncode is not None and replacement.returncode is not None
+            assert len(read()) == 2 and not manager.is_running and not bus.listeners
+        finally:
+            for task in (reset, shutdown):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(sys.platform != 'linux', reason='inherited pipe oracle uses /proc')
+@pytest.mark.parametrize('kill_delay', [0.05, 60])
+@pytest.mark.parametrize('cancel_reset', [False, True])
+def test_reset_timeout_retains_owner_and_blocks_manual_replacement(manager_factory, monkeypatch, kill_delay, cancel_reset):
+    _, manager, bus, read, _ = manager_factory
+    (manager._install_dir / 'ignore_term').touch()
+
+    async def scenario():
+        process = helper = dispatch = reset = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            process = manager._process
+            real_kill = process.kill
+            # Real SIGKILL after native wait registration; owned helper keeps
+            # stdout open so the final native wait actually times out.
+            def delayed_kill():
+                nonlocal dispatch
+                dispatch = asyncio.get_running_loop().call_later(kill_delay, real_kill)
+            monkeypatch.setattr(process, 'kill', delayed_kill)
+            writer = os.open(f'/proc/{process.pid}/fd/1', os.O_WRONLY)
+            try:
+                helper = await asyncio.create_subprocess_exec(
+                    sys.executable, '-c', 'import time; time.sleep(60)',
+                    stdout=writer, stderr=asyncio.subprocess.DEVNULL,
+                )
+            finally:
+                os.close(writer)
+            term_sent = asyncio.Event()
+            real_signal = process.send_signal
+            def observed_signal(sig):
+                real_signal(sig)
+                if sig == signal.SIGTERM:
+                    term_sent.set()
+            monkeypatch.setattr(process, 'send_signal', observed_signal)
+            reset = asyncio.create_task(manager.reset_tunnel())
+            if cancel_reset:
+                await term_sent.wait()
+                reset.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await reset
+            else:
+                receipt = await reset
+                assert receipt.cutoff_verified is False and receipt.restarted is False
+            assert manager._process is process
+            assert process.returncode == (-signal.SIGKILL if kill_delay < 1 else None)
+            assert len(read()) == 1 and not bus.listeners
+            assert not await manager.start_tunnel('synthetic-watchdog-token')
+            await asyncio.sleep(0.15)
+            assert len(read()) == 1 and manager._process is process
+            assert manager._desired_token is None
+            helper.terminate()
+            await helper.wait()
+            if process.returncode is None:
+                real_kill()
+                await process.wait()
+            assert await manager.stop_tunnel()
+            (manager._install_dir / 'ignore_term').unlink()
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            assert len(read()) == 2
+        finally:
+            if reset is not None and not reset.done():
+                reset.cancel()
+                await asyncio.gather(reset, return_exceptions=True)
+            if dispatch is not None:
+                dispatch.cancel()
+            if helper is not None and helper.returncode is None:
+                helper.kill()
+                await helper.wait()
+            if process is not None:
+                if process.returncode is None:
+                    real_kill()
+                await process.wait()
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_cancelled_while_spawn_returns_keeps_child_owned(manager_factory, monkeypatch):
+    module, manager, bus, read, _ = manager_factory
+    real_spawn = asyncio.create_subprocess_exec
+
+    async def scenario():
+        reset = None
+        spawned = []
+        release = asyncio.Event()
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+
+            async def observed_spawn(*args, **kwargs):
+                process = await real_spawn(*args, **kwargs)
+                spawned.append(process)
+                await release.wait()
+                return process
+
+            monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', observed_spawn)
+            reset = asyncio.create_task(manager.reset_tunnel())
+            await wait_until(lambda: len(spawned) == 1)
+            reset.cancel()
+            asyncio.get_running_loop().call_later(0.05, release.set)
+            with pytest.raises(asyncio.CancelledError):
+                await reset
+            assert spawned[0].returncode is not None
+            assert not manager.is_running and manager._desired_token is None
+            assert not bus.listeners and len(read()) == 2
+        finally:
+            release.set()
+            if reset is not None and not reset.done():
+                reset.cancel()
+                await asyncio.gather(reset, return_exceptions=True)
+            for process in spawned:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure', ['immediate_exit', 'spawn_oserror'])
+def test_reset_restart_failure_keeps_cutoff_without_recovery(manager_factory, failure):
+    _, manager, bus, read, fail_range = manager_factory
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            if failure == 'immediate_exit':
+                fail_range.write_text(json.dumps([2]))
+            else:
+                manager._binary_path.chmod(0o600)
+            receipt = await manager.reset_tunnel()
+            assert receipt.cutoff_verified is True and receipt.restarted is False
+            assert first.returncode is not None and not manager.is_running
+            await asyncio.sleep(0.15)
+            assert len(read()) == (2 if failure == 'immediate_exit' else 1)
+            assert manager._desired_token is None and not bus.listeners
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_escalates_term_to_kill_before_replacement(manager_factory):
+    _, manager, _, read, _ = manager_factory
+
+    async def scenario():
+        try:
+            (manager._install_dir / 'ignore_term').touch()
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            (manager._install_dir / 'ignore_term').unlink()
+            receipt = await manager.reset_tunnel()
+            assert receipt.cutoff_verified is True and receipt.restarted is True
+            assert first.returncode == -signal.SIGKILL and len(read()) == 2
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('queued_operation', ['start', 'stop', 'reset'])
+def test_reset_serializes_manual_lifecycle_calls(manager_factory, queued_operation):
+    _, manager, _, read, _ = manager_factory
+    gate = manager._install_dir / 'term_gate'
+    gate.touch()
+
+    async def scenario():
+        reset = queued = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            reset = asyncio.create_task(manager.reset_tunnel())
+            await wait_until(lambda: (manager._install_dir / 'term_received').exists())
+            operation = {
+                'start': lambda: manager.start_tunnel('synthetic-watchdog-token'),
+                'stop': manager.stop_tunnel,
+                'reset': manager.reset_tunnel,
+            }[queued_operation]
+            queued = asyncio.create_task(operation())
+            await asyncio.sleep(0.05)
+            assert not queued.done() and len(read()) == 1
+            gate.unlink()
+            receipt = await reset
+            assert receipt.cutoff_verified is True and receipt.restarted is True
+            assert first.returncode is not None
+            result = await queued
+            if queued_operation == 'reset':
+                assert result.cutoff_verified is True and result.restarted is True
+            else:
+                assert result is True
+            await asyncio.sleep(0.15)
+            assert len(read()) == (3 if queued_operation == 'reset' else 2)
+            assert manager.is_running is (queued_operation != 'stop')
+        finally:
+            gate.unlink(missing_ok=True)
+            for task in (reset, queued):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_during_watchdog_backoff_has_only_one_replacement(manager_factory, monkeypatch):
+    module, manager, _, read, _ = manager_factory
+    monkeypatch.setattr(module, '_RESTART_RETRY_INITIAL', 0.3)
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            first.kill()
+            await first.wait()
+            await asyncio.sleep(0.05)
+            receipt = await manager.reset_tunnel()
+            assert receipt.cutoff_verified is True and receipt.restarted is True
+            await asyncio.sleep(0.4)
+            assert len(read()) == 2 and manager.is_running
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_cancelled_during_stop_holds_lock_through_cleanup(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+    gate = manager._install_dir / 'term_gate'
+    gate.touch()
+
+    async def scenario():
+        reset = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            reset = asyncio.create_task(manager.reset_tunnel())
+            await wait_until(lambda: (manager._install_dir / 'term_received').exists())
+            reset.cancel()
+            asyncio.get_running_loop().call_later(0.03, reset.cancel)
+            asyncio.get_running_loop().call_later(0.1, gate.unlink)
+            with pytest.raises(asyncio.CancelledError):
+                await reset
+            assert first.returncode is not None and not manager.is_running
+            assert manager._desired_token is None and not bus.listeners
+            await asyncio.sleep(0.15)
+            assert len(read()) == 1
+        finally:
+            gate.unlink(missing_ok=True)
+            if reset is not None and not reset.done():
+                reset.cancel()
+                await asyncio.gather(reset, return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_cancelled_while_queued_does_not_change_active_reset(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+    gate = manager._install_dir / 'term_gate'
+    gate.touch()
+
+    async def scenario():
+        reset = queued = None
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            reset = asyncio.create_task(manager.reset_tunnel())
+            await wait_until(lambda: (manager._install_dir / 'term_received').exists())
+            queued = asyncio.create_task(manager.reset_tunnel())
+            await asyncio.sleep(0.05)
+            queued.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+            gate.unlink()
+            receipt = await reset
+            assert receipt.cutoff_verified is True and receipt.restarted is True
+            assert manager.is_running and len(read()) == 2 and len(bus.listeners) == 1
+        finally:
+            gate.unlink(missing_ok=True)
+            for task in (reset, queued):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_without_process_or_during_shutdown_never_starts(manager_factory):
+    _, manager, bus, read, _ = manager_factory
+
+    async def scenario():
+        receipt = await manager.reset_tunnel()
+        assert receipt.cutoff_verified is True and receipt.restarted is False
+        assert not read() and not bus.listeners
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            manager.hass.is_stopping = True
+            receipt = await manager.reset_tunnel()
+            assert receipt.cutoff_verified is True and receipt.restarted is False
+            assert first.returncode is not None and len(read()) == 1
+            assert not manager.is_running and not bus.listeners
+        finally:
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('lookup_stage', ['term', 'kill'])
+def test_reset_requires_observed_exit_after_signal_lookup_error(manager_factory, monkeypatch, lookup_stage):
+    _, manager, bus, read, _ = manager_factory
+    if lookup_stage == 'kill':
+        (manager._install_dir / 'ignore_term').touch()
+
+    async def scenario():
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            first = manager._process
+            real_signal = first.send_signal
+            real_kill = first.kill
+
+            def unavailable_signal(sig):
+                if lookup_stage == 'term' and sig == signal.SIGTERM:
+                    raise ProcessLookupError
+                real_signal(sig)
+
+            # The OS boundary reports no such process, but the native handle
+            # has no exit status yet. Reset must conservatively retain it.
+            monkeypatch.setattr(first, 'send_signal', unavailable_signal)
+            if lookup_stage == 'kill':
+                def unavailable_kill():
+                    raise ProcessLookupError
+                monkeypatch.setattr(first, 'kill', unavailable_kill)
+            receipt = await manager.reset_tunnel()
+            assert receipt.cutoff_verified is False and receipt.restarted is False
+            assert manager._process is first and first.returncode is None
+            assert len(read()) == 1 and not bus.listeners
+            assert not await manager.stop_tunnel()
+            assert manager._process is first and first.returncode is None
+            assert not await manager.start_tunnel('synthetic-watchdog-token')
+            assert len(read()) == 1
+            monkeypatch.setattr(first, 'send_signal', real_signal)
+            monkeypatch.setattr(first, 'kill', real_kill)
+            first.kill()
+            await first.wait()
+            assert await manager.stop_tunnel()
+            (manager._install_dir / 'ignore_term').unlink(missing_ok=True)
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            assert len(read()) == 2
+        finally:
+            if 'first' in locals():
+                monkeypatch.setattr(first, 'send_signal', real_signal)
+                monkeypatch.setattr(first, 'kill', real_kill)
+                if first.returncode is None:
+                    first.kill()
+                await first.wait()
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+def test_reset_cancelled_failed_spawn_returns_no_receipt(manager_factory, monkeypatch):
+    module, manager, bus, _, _ = manager_factory
+    real_spawn = asyncio.create_subprocess_exec
+
+    async def scenario():
+        reset = None
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        try:
+            assert await manager.start_tunnel('synthetic-watchdog-token')
+            manager._binary_path.chmod(0o600)
+
+            async def delayed_exec_error(*args, **kwargs):
+                entered.set()
+                await release.wait()
+                return await real_spawn(*args, **kwargs)
+
+            monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', delayed_exec_error)
+            reset = asyncio.create_task(manager.reset_tunnel())
+            await entered.wait()
+            reset.cancel()
+            asyncio.get_running_loop().call_later(0.05, release.set)
+            with pytest.raises(asyncio.CancelledError):
+                await reset
+            assert not manager.is_running and not bus.listeners
+            assert manager._desired_token is None
+        finally:
+            release.set()
+            if reset is not None and not reset.done():
+                reset.cancel()
+                await asyncio.gather(reset, return_exceptions=True)
+            await manager.stop_tunnel()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('fault', ['timeout', 'lookup'])
+def test_transport_probe_cleanup_failure_is_bounded_and_reports_all_handles(tmp_path, fault):
+    """Only the failure cleanup seam is simulated; the 21-check OS proof stays real."""
+    import ast
+    import hashlib
+    import tempfile
+
+    probe = SOURCE.parent / 'scripts' / 'probe_connector_transport.py'
+    tree = ast.parse(probe.read_text())
+    main = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == 'main')
+
+    class Handle:
+        returncode = None
+
+        def __init__(self, failure=None):
+            self.failure = failure
+            self.kill_attempted = False
+            self.wait_attempted = False
+
+        def kill(self):
+            self.kill_attempted = True
+            if self.failure == 'lookup':
+                raise ProcessLookupError
+
+        async def wait(self):
+            self.wait_attempted = True
+            if self.failure == 'timeout':
+                await asyncio.sleep(60)
+            self.returncode = -signal.SIGKILL
+            return self.returncode
+
+    handles = [Handle(fault), Handle('lookup'), Handle()]
+
+    def fail_setup(*_):
+        raise RuntimeError('synthetic setup failure to enter owned-handle fallback')
+
+    namespace = {
+        'asyncio': asyncio, 'hashlib': hashlib, 'json': json, 'Path': Path,
+        'tempfile': tempfile, 'SOURCE': SOURCE, 'OUT': tmp_path,
+        'load_manager': lambda: None, 'make_manager': fail_setup,
+        'processes': handles, 'checks': [], '_CLEANUP_WAIT_TIMEOUT': 0.02,
+    }
+    # Execute the exact packaged main body, without importing WS/HA libraries
+    # unrelated to this failure seam. Full packaged transport runs separately.
+    exec(compile(ast.Module(body=[main], type_ignores=[]), str(probe), 'exec'), namespace)
+
+    async def scenario():
+        assert await asyncio.wait_for(namespace['main'](), timeout=0.3) == 1
+        result = json.loads((tmp_path / 'result.json').read_text())
+        assert result['passed'] is False and result['cleanup'] is False
+        assert result['failure_type'] == 'RuntimeError' and result['runtime_removed'] is True
+        assert all(handle.kill_attempted for handle in handles)
+        assert handles[-1].wait_attempted and handles[-1].returncode == -signal.SIGKILL
+        expected = ['TimeoutError', 'ProcessLookupError'] if fault == 'timeout' else ['ProcessLookupError', 'ProcessLookupError']
+        assert result['cleanup_failure_types'] == expected
     asyncio.run(scenario())
