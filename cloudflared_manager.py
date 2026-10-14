@@ -11,7 +11,7 @@ import platform
 import shutil
 import signal
 import tarfile
-from typing import Any
+from typing import Any, NamedTuple
 
 import aiohttp
 
@@ -70,6 +70,13 @@ _DOWNLOAD_URL_MAP: dict[tuple[str, str], str] = {
 }
 
 
+class TunnelResetResult(NamedTuple):
+    """Local process receipt, not proof of global tunnel revocation."""
+
+    cutoff_verified: bool
+    restarted: bool
+
+
 class CloudflaredManager:
     """Manage cloudflared binary download and tunnel process lifecycle."""
 
@@ -96,6 +103,7 @@ class CloudflaredManager:
         self._binary_path: Path = self._install_dir / _BINARY_NAME
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
+        self._stop_unverified = False
         self._stdout_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
         self._watchdog_task: asyncio.Task | None = None
@@ -273,7 +281,7 @@ class CloudflaredManager:
 
         """
         async with self._lock:
-            if self.hass.is_stopping:
+            if self.hass.is_stopping or self._stop_unverified:
                 return False
             self._desired_token = tunnel_token
             if self._shutdown_unsubscribe is None:
@@ -285,12 +293,7 @@ class CloudflaredManager:
             except asyncio.CancelledError:
                 # A startup task can be cancelled after the child is spawned
                 # but before its initial readiness delay has finished.
-                self._desired_token = None
-                unsubscribe = self._shutdown_unsubscribe
-                self._shutdown_unsubscribe = None
-                if unsubscribe is not None:
-                    unsubscribe()
-                await self._stop_tunnel_locked()
+                await self._cleanup_cancelled_lifecycle_locked()
                 raise
             if started:
                 if self._watchdog_task is None or self._watchdog_task.done():
@@ -298,6 +301,75 @@ class CloudflaredManager:
                         self._async_watch_process(), name="woow_cloudflared_watchdog"
                     )
             return started
+
+    async def reset_tunnel(self) -> TunnelResetResult:
+        """Verify local child exit and attempt replacement under one lock.
+
+        Reuse only the in-memory desired token. No provider readiness or global
+        revocation is implied by this receipt. Cancellation returns no receipt.
+        """
+        async with self._lock:
+            try:
+                token = self._desired_token
+                await self._disable_recovery_locked()
+                if not await self._stop_tunnel_verified_locked():
+                    return TunnelResetResult(False, False)
+                if token is None or self.hass.is_stopping:
+                    return TunnelResetResult(True, False)
+                self._desired_token = token
+                self._shutdown_unsubscribe = self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STOP, self._async_stop_on_shutdown
+                )
+                started = await self._start_tunnel_locked(token)
+                if self.hass.is_stopping:
+                    await self._disable_recovery_locked()
+                    await self._stop_tunnel_verified_locked()
+                    return TunnelResetResult(True, False)
+                if started:
+                    self._watchdog_task = asyncio.create_task(
+                        self._async_watch_process(), name="woow_cloudflared_watchdog"
+                    )
+                else:
+                    await self._disable_recovery_locked()
+                return TunnelResetResult(True, started)
+            except asyncio.CancelledError:
+                await self._cleanup_cancelled_lifecycle_locked()
+                raise
+
+    async def _stop_tunnel_verified_locked(self) -> bool:
+        """Require an observed exit, retaining ownership on a signal lookup race."""
+        prior = self._process
+        stopped = await self._stop_tunnel_locked()
+        if not stopped or (prior is not None and prior.returncode is None):
+            self._process = prior
+            self._stop_unverified = prior is not None
+            return False
+        return True
+
+    async def _cleanup_cancelled_lifecycle_locked(self) -> None:
+        """Keep the lock through bounded cleanup, even on repeated cancellation."""
+        async def cleanup() -> None:
+            await self._disable_recovery_locked()
+            await self._stop_tunnel_verified_locked()
+
+        task = asyncio.create_task(cleanup())
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+        task.result()
+
+    async def _disable_recovery_locked(self) -> None:
+        """Remove restart intent and watchdog while holding the lifecycle lock."""
+        self._desired_token = None
+        if self._shutdown_unsubscribe is not None:
+            self._shutdown_unsubscribe()
+            self._shutdown_unsubscribe = None
+        watchdog, self._watchdog_task = self._watchdog_task, None
+        if watchdog is not None and not watchdog.done():
+            watchdog.cancel()
+            await asyncio.gather(watchdog, return_exceptions=True)
 
     async def _async_stop_on_shutdown(self, _event: Any) -> None:
         """Stop the child before HA exits, as well as on entry unload."""
@@ -340,6 +412,9 @@ class CloudflaredManager:
 
     async def _start_tunnel_locked(self, tunnel_token: str) -> bool:
         """Start tunnel (must be called while holding self._lock)."""
+        if self._stop_unverified:
+            _LOGGER.warning("cloudflared cleanup must be verified before starting")
+            return False
         if self.is_running:
             _LOGGER.warning("cloudflared tunnel is already running")
             return True
@@ -367,12 +442,24 @@ class CloudflaredManager:
             self._binary_path,
         )
 
+        cancelled = False
         try:
-            self._process = await asyncio.create_subprocess_exec(
+            # Do not lose a child if cancellation lands between OS spawn and
+            # the subprocess API returning its handle. Keep the lifecycle lock
+            # until ownership is installed; the caller then cleans up.
+            spawn = asyncio.create_task(asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-            )
+            ))
+            while not spawn.done():
+                try:
+                    await asyncio.shield(spawn)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self._process = spawn.result()
+            if cancelled:
+                raise asyncio.CancelledError
 
             # Start background tasks to stream stdout/stderr to logger
             self._stdout_task = asyncio.create_task(
@@ -397,6 +484,8 @@ class CloudflaredManager:
                 "cloudflared tunnel started with PID %s", self._process.pid
             )
         except OSError:
+            if cancelled:
+                raise asyncio.CancelledError from None
             _LOGGER.exception("Failed to start cloudflared tunnel")
             self._process = None
             return False
@@ -410,24 +499,19 @@ class CloudflaredManager:
         Sends SIGTERM first, waits up to 5 seconds, then SIGKILL.
 
         Returns ``True`` when the process has been stopped (or was not running).
-        Returns ``False`` on a final wait timeout, retaining the process for
-        a later cleanup attempt.
+        Returns ``False`` on an unverified exit or final wait timeout, retaining
+        the process for a later cleanup attempt.
         """
         async with self._lock:
-            self._desired_token = None
-            if self._shutdown_unsubscribe is not None:
-                self._shutdown_unsubscribe()
-                self._shutdown_unsubscribe = None
-            watchdog, self._watchdog_task = self._watchdog_task, None
-            if watchdog is not None and not watchdog.done():
-                watchdog.cancel()
-                await asyncio.gather(watchdog, return_exceptions=True)
-            return await self._stop_tunnel_locked()
+            await self._disable_recovery_locked()
+            return await self._stop_tunnel_verified_locked()
 
     async def _stop_tunnel_locked(self) -> bool:
         """Stop tunnel (must be called while holding self._lock)."""
+        self._stop_unverified = self._process is not None
         if self._process is None:
             _LOGGER.debug("No cloudflared process to stop")
+            self._stop_unverified = False
             return True
 
         if self._process.returncode is not None:
@@ -437,6 +521,7 @@ class CloudflaredManager:
             )
             self._process = None
             self._cancel_stream_tasks()
+            self._stop_unverified = False
             return True
 
         pid = self._process.pid
@@ -448,6 +533,7 @@ class CloudflaredManager:
             _LOGGER.debug("cloudflared process already gone")
             self._process = None
             self._cancel_stream_tasks()
+            self._stop_unverified = False
             return True
 
         try:
@@ -474,6 +560,7 @@ class CloudflaredManager:
 
         self._process = None
         self._cancel_stream_tasks()
+        self._stop_unverified = False
         return True
 
     def _cancel_stream_tasks(self) -> None:
