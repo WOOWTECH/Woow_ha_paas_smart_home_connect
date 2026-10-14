@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 import logging
 import os
+from typing import Any
 
 import aiohttp
 
@@ -16,6 +17,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .access_revocation import AccessRevisionTracker
 from .api_client import (
     ApiError,
     AuthenticationError,
@@ -24,6 +26,9 @@ from .api_client import (
 )
 from .cloudflared_manager import CloudflaredManager
 from .const import (
+    ACCESS_RESET_RETRY_INITIAL,
+    ACCESS_RESET_RETRY_MAX,
+    ACCESS_REVOCATION_DELAY,
     CONF_HOME_NAME,
     DOMAIN,
     HA_MCP_DATA_WEBHOOK_ID,
@@ -203,6 +208,32 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         self.instance_deleted = False
         # 第一次收到平台 JSON 404 的時間；任何一次成功的 poll 會歸零。
         self._gone_since: datetime | None = None
+        # Smart Home 自動撤權：access_revision 改變 ⇒ 背景 reset_tunnel()。
+        # 背景任務掛在 config entry 上，卸載時 HA 也會取消（async_unload_entry
+        # 另外先明確取消，確保在 stop_tunnel 之前收尾）。
+        self._access = AccessRevisionTracker(
+            reset=tunnel_manager.reset_tunnel,
+            has_cutoff_target=lambda: tunnel_manager.has_cutoff_target,
+            is_deleted=lambda: self.instance_deleted,
+            create_task=lambda target, name: (
+                config_entry.async_create_background_task(hass, target, name)
+            ),
+            on_change=self.async_update_listeners,
+            delay=ACCESS_REVOCATION_DELAY,
+            retry_initial=ACCESS_RESET_RETRY_INITIAL,
+            retry_max=ACCESS_RESET_RETRY_MAX,
+            label=f"{product_type} {instance_id}",
+            now=dt_util.utcnow,
+        )
+
+    @property
+    def access_revision_attributes(self) -> dict[str, Any] | None:
+        """撤權版本狀態（給 tunnel status sensor）；舊平台／SA 為 None。不含 token。"""
+        return self._access.attributes
+
+    async def async_cancel_access_reset(self) -> None:
+        """取消執行中的撤權 reset（entry 卸載時，在 stop_tunnel 之前呼叫）。"""
+        await self._access.async_cancel()
 
     async def _async_update_data(self) -> TunnelStatusData:
         """Fetch tunnel status by merging local process state and remote API."""
@@ -223,6 +254,8 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             previous.mcp_integration_state if previous else None
         )
         mcp_webhook_id: str | None = previous.mcp_webhook_id if previous else None
+        # 撤權版本只採信成功 poll 的值；失敗為 None（只讓已落後的 reset 退避重試）。
+        access_revision: object = None
         try:
             if is_sa:
                 data = await self._api_client.get_access_status(self._instance_id)
@@ -244,6 +277,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
                 remote_status = (data.get("tunnel_status") or "").lower()
                 # #270：僅 SH payload 帶 mcp（SA 的 to_dict 無此 key）；成功才覆寫。
                 mcp = data.get("mcp") or ""
+                access_revision = data.get("access_revision")
         except AuthenticationError as err:
             raise ConfigEntryAuthFailed(
                 "Authentication failed while fetching tunnel status"
@@ -286,6 +320,11 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             self._gone_since = None
             if self.instance_deleted:
                 self._async_clear_instance_deleted()
+
+        # 缺欄位／型別不對（舊平台）由 tracker 忽略；SA 先不接（契約「刻意不做」）。
+        # 已判定刪除的路徑在上面就 return 了，不會走到這裡。
+        if not is_sa:
+            self._access.async_poll(access_revision)
 
         # Build the display URL. Smart home uses its stored subdomain; security
         # access uses its first route hostname (empty when active_no_route / 0 routes).

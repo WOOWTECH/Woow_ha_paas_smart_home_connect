@@ -159,6 +159,13 @@ SERVICE_GET_STATUS = "get_status"
 # --- Coordinator ---
 UPDATE_INTERVAL = 30  # seconds
 
+# --- 自動撤權（Smart Home access_revision，跨 repo 契約 v1 §5）---
+# 看到新版本後先等 Cloudflare Access 變更傳播，再斷線重連。
+ACCESS_REVOCATION_DELAY = 5  # seconds
+# reset 失敗（未確認舊 connector 退出或例外）後，於之後的 poll 指數退避重試。
+ACCESS_RESET_RETRY_INITIAL = 30  # seconds
+ACCESS_RESET_RETRY_MAX = 300  # seconds
+
 # --- Custom OAuth2 callback (replaces my.home-assistant.io relay) ---
 # Cross-repo contract constant: paas side OAuthClient.HA_CALLBACK_PATH must match
 # this value byte-for-byte. Changing it is a cross-repo breaking change.
