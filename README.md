@@ -68,3 +68,22 @@ HA 管理員請到「設定 → 裝置與服務 → Home Assistant MCP → HA-MC
 本整合不會自動 purge 歷史、變更 HA-MCP 身分驗證或關閉其寫入工具。
 伺服器的 HA 管理員驗證、唯讀限制、套件隔離與外部 client OAuth 相容性
 仍須各自驗證。
+
+### Portable watchdog regression gate
+
+Pull requests run `watchdog-regression` with Python 3.13. Reproduce its test
+steps in a disposable environment:
+
+```bash
+python3.13 -m venv .venv-watchdog
+.venv-watchdog/bin/python -m pip install -r scripts/requirements-watchdog.txt
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv-watchdog/bin/python -B scripts/test_watchdog.py
+```
+
+Use this runner instead of collecting `watchdog_tests` directly from the
+integration root: direct collection imports the entire HA integration. The
+runner copies the unchanged tests to a temporary directory and loads this
+checkout's `cloudflared_manager.py`. It exercises real processes, signals,
+locks and cancellation with synthetic credentials and stubbed HA wiring.
+It does not establish native HA integration, live Cloudflare, or production
+acceptance; those remain separate tests.
