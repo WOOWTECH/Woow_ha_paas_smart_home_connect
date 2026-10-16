@@ -5,6 +5,7 @@ from __future__ import annotations
 from http import HTTPStatus
 import logging
 from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 
@@ -21,6 +22,7 @@ from .const import (
     API_PATH_SA_WORKSPACES,
     API_PATH_WORKSPACE_HOMES,
     API_PATH_WORKSPACES,
+    ERROR_ALREADY_BOUND,
     ERROR_INSUFFICIENT_ROLE,
     ERROR_NOT_FOUND,
 )
@@ -47,6 +49,21 @@ class InsufficientRoleError(AuthenticationError):
     roles). Re-authorizing cannot fix this, so callers must not trigger reauth."""
 
 
+class AlreadyBoundError(ApiError):
+    """平台 409 ``already_bound``：這個家／門禁已經綁在另一台 Home Assistant 上。
+
+    重新授權救不了，也不該退回用舊 token——那正是「兩台同時接同一條 tunnel」的
+    成因。呼叫端要停下來，請人在平台上解除綁定或改綁另一個家。``detail`` 帶著
+    平台給的對方機器標籤與綁定時間，原文轉給使用者看。"""
+
+    def __init__(self, status: int, message: str, bound_to: str = "",
+                 bound_at: str = "") -> None:
+        """Keep the platform's description of the instance that holds the binding."""
+        super().__init__(status, message)
+        self.bound_to = bound_to
+        self.bound_at = bound_at
+
+
 class NotFoundError(ApiError):
     """Raised on 404 Not Found."""
 
@@ -58,8 +75,21 @@ class InstanceGoneError(NotFoundError):
     都可能回 404，但那些不代表實例被刪除，不可據此停隧道。"""
 
 
-def api_error_for(status: int, error_code: str, message: str) -> ApiError:
+def api_error_for(
+    status: int,
+    error_code: str,
+    message: str,
+    body: dict[str, Any] | None = None,
+) -> ApiError:
     """Map a non-200 platform response to the exception type callers branch on."""
+    if status == HTTPStatus.CONFLICT and error_code == ERROR_ALREADY_BOUND:
+        info = body or {}
+        return AlreadyBoundError(
+            status,
+            message,
+            bound_to=str(info.get("bound_to") or ""),
+            bound_at=str(info.get("bound_at") or ""),
+        )
     if status == HTTPStatus.FORBIDDEN and error_code == ERROR_INSUFFICIENT_ROLE:
         return InsufficientRoleError(status, message)
     if status in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
@@ -69,6 +99,13 @@ def api_error_for(status: int, error_code: str, message: str) -> ApiError:
             return InstanceGoneError(status, message)
         return NotFoundError(status, message)
     return ApiError(status, message)
+
+
+def _identity_query(instance_uid: str, instance_label: str) -> str:
+    """``?instance_uid=…&instance_label=…``，兩個都空時回空字串（舊平台無害）。"""
+    params = {k: v for k, v in (
+        ("instance_uid", instance_uid), ("instance_label", instance_label)) if v}
+    return f"?{urlencode(params)}" if params else ""
 
 
 class WoowPaasApiClient:
@@ -100,9 +137,11 @@ class WoowPaasApiClient:
 
         # Attempt to extract error detail from response body
         error_code = ""
+        parsed: dict[str, Any] | None = None
         try:
             body = await resp.json()
             if isinstance(body, dict):
+                parsed = body
                 error_code = body.get("error", "")
                 detail = body.get("detail", error_code)
             else:
@@ -111,7 +150,7 @@ class WoowPaasApiClient:
             detail = await resp.text()
 
         message = f"{resp.status} {detail}" if detail else f"{resp.status}"
-        raise api_error_for(resp.status, error_code, message)
+        raise api_error_for(resp.status, error_code, message, parsed)
 
     async def get_workspaces(self) -> list[dict[str, Any]]:
         """Fetch all workspaces for the authenticated user.
@@ -145,14 +184,28 @@ class WoowPaasApiClient:
         data = await self._request("GET", path)
         return data["home"]
 
-    async def get_tunnel_token(self, home_id: int) -> dict[str, Any]:
+    async def get_tunnel_token(
+        self,
+        home_id: int,
+        instance_uid: str = "",
+        instance_label: str = "",
+    ) -> dict[str, Any]:
         """Fetch a Cloudflare tunnel token for a smart home.
+
+        ``instance_uid`` 讓平台認得「是哪一台 HA 在要這條 tunnel 的權杖」：第一台
+        要到的會被記成綁定對象，之後其他 uid 來要同一個家就會收到 409
+        ``already_bound``（#31）。同一台重複呼叫是冪等的（重啟、reload 都會再要一
+        次）。不帶 uid 的舊版元件平台仍會放行，但那個家會被標成 legacy 綁定。
 
         Returns:
             Dict with keys: tunnel_token, tunnel_id, subdomain.
 
+        Raises:
+            AlreadyBoundError: 這個家已經綁在另一台 HA 上。
+
         """
         path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=home_id)
+        path += _identity_query(instance_uid, instance_label)
         data = await self._request("GET", path)
         _LOGGER.debug("Fetched tunnel token for home %s", home_id)
         return data
@@ -216,14 +269,27 @@ class WoowPaasApiClient:
         data = await self._request("GET", path)
         return data["access"]
 
-    async def get_access_tunnel_token(self, access_id: int) -> dict[str, Any]:
+    async def get_access_tunnel_token(
+        self,
+        access_id: int,
+        instance_uid: str = "",
+        instance_label: str = "",
+    ) -> dict[str, Any]:
         """Fetch a Cloudflare tunnel token for a security access.
+
+        同 ``get_tunnel_token`` 的綁定語意（#31）——Security Access 這一側的端點是
+        鏡像，收緊必須同步，否則攻擊面只是搬家（平台 repo 的
+        ``two-layer-acl-lockstep`` pattern）。
 
         Returns:
             Dict with keys: tunnel_token, tunnel_id (NO subdomain).
 
+        Raises:
+            AlreadyBoundError: 這個門禁已經綁在另一台 HA 上。
+
         """
         path = API_PATH_SA_ACCESS_TUNNEL_TOKEN.format(access_id=access_id)
+        path += _identity_query(instance_uid, instance_label)
         data = await self._request("GET", path)
         _LOGGER.debug("Fetched tunnel token for access %s", access_id)
         return data

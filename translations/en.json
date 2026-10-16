@@ -51,6 +51,7 @@
     },
     "abort": {
       "already_configured": "This product instance is already configured.",
+      "already_bound": "This smart home is already connected to another Home Assistant installation ({bound_to}, since {bound_at}). Two installations must not share one tunnel: the public address would reach whichever answers first, so about half of all requests would land on the wrong machine. Release the binding in the WOOW PaaS portal, or pick the smart home that belongs to this machine.",
       "no_workspaces": "No workspaces found for your account. Please create a workspace first.",
       "no_homes": "No smart homes found in the selected workspace.",
       "no_accesses": "No security accesses found in the selected workspace.",
