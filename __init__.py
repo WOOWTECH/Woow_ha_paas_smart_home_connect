@@ -18,7 +18,11 @@ from homeassistant.core import (
     ServiceResponse,
     SupportsResponse,
 )
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    ConfigEntryError,
+    HomeAssistantError,
+)
 from homeassistant.helpers import (
     config_entry_oauth2_flow,
     config_validation as cv,
@@ -32,6 +36,7 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
 from homeassistant.helpers.typing import ConfigType
 
 from .api_client import (
+    AlreadyBoundError,
     ApiError,
     AuthenticationError,
     InsufficientRoleError,
@@ -42,6 +47,8 @@ from .const import (
     API_BASE_URL,
     CONF_HOME_ID,
     CONF_HOME_NAME,
+    CONF_INSTANCE_LABEL,
+    CONF_INSTANCE_UID,
     CONF_PRODUCT_TYPE,
     CONF_SUBDOMAIN,
     CONF_TUNNEL_ID,
@@ -58,6 +65,7 @@ from .const import (
     SERVICE_STOP_TUNNEL,
 )
 from .coordinator import TunnelCoordinator, instance_deleted_issue_id
+from .instance_identity import async_instance_identity
 from .oauth2 import create_implementation
 from .oauth_callback_view import async_register_woow_callback_view
 
@@ -323,17 +331,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
     is_sa = product_type == PRODUCT_SECURITY_ACCESS
     instance_id: int = entry.data[CONF_HOME_ID]
 
+    # #31 第一道（純本機，不靠平台）：這個 entry 是哪一台 HA 建的？
+    #
+    # 設定被搬到另一台機器的典型路徑是還原備份或複製整個映像——entry 連 tunnel
+    # 權杖一起過去，開機就會有第二個 cloudflared 接上同一條 tunnel，而兩邊的 UI
+    # 都顯示「已連線」。這裡在起隧道之前就擋下來，請人改綁自己的家。
+    #
+    # 0.4.11 以前建立的 entry 沒有這個欄位：第一次啟動時蓋章成本機 uid（那是唯一
+    # 已知在跑的機器），之後才有判準。蓋章用 uid 不用 label——label 會隨使用者改
+    # 名字漂動。
+    this_uid, this_label = await async_instance_identity(hass)
+    bound_uid = entry.data.get(CONF_INSTANCE_UID)
+    if not bound_uid:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={**entry.data, CONF_INSTANCE_UID: this_uid,
+                  CONF_INSTANCE_LABEL: this_label},
+        )
+        _LOGGER.debug("Stamped this installation onto entry %s", entry.entry_id)
+    elif bound_uid != this_uid:
+        raise ConfigEntryError(
+            f"This configuration belongs to another Home Assistant installation "
+            f"({entry.data.get(CONF_INSTANCE_LABEL) or bound_uid}). Two "
+            f"installations must not share one tunnel: Cloudflare would send "
+            f"requests to whichever answers first, so the public address would "
+            f"reach the wrong machine about half the time. Remove this entry and "
+            f"add the Smart Home that belongs to this machine."
+        )
+
     # Re-fetch tunnel token on startup to ensure freshness
     try:
         if is_sa:
-            token_data = await api_client.get_access_tunnel_token(instance_id)
+            token_data = await api_client.get_access_tunnel_token(
+                instance_id, this_uid, this_label)
             new_data = {
                 **entry.data,
                 CONF_TUNNEL_TOKEN: token_data["tunnel_token"],
                 CONF_TUNNEL_ID: token_data["tunnel_id"],
             }
         else:
-            token_data = await api_client.get_tunnel_token(instance_id)
+            token_data = await api_client.get_tunnel_token(
+                instance_id, this_uid, this_label)
             new_data = {
                 **entry.data,
                 CONF_TUNNEL_TOKEN: token_data["tunnel_token"],
@@ -342,6 +380,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
             }
         hass.config_entries.async_update_entry(entry, data=new_data)
         _LOGGER.debug("Refreshed tunnel token for %s %s", product_type, instance_id)
+    except AlreadyBoundError as err:
+        # #31 第二道（平台端判定）：平台說這個家綁在別台機器上。
+        #
+        # ⛔ 這裡刻意**不**退回用快取的權杖——其他 ApiError 可以，因為那些是
+        # 「平台暫時答不出來」；這一個是平台明確回答「你不是綁定的那台」。拿舊
+        # 權杖起隧道正是要防的那件事（第二個 cloudflared）。
+        raise ConfigEntryError(
+            f"The platform has this {'security access' if is_sa else 'smart home'} "
+            f"bound to another Home Assistant installation"
+            + (f" ({err.bound_to})" if err.bound_to else "")
+            + (f" since {err.bound_at}" if err.bound_at else "")
+            + ". Release the binding in the WOOW PaaS portal, or pick the one that "
+            "belongs to this machine."
+        ) from err
     except InsufficientRoleError:
         # 設定這個 entry 的人之後不再是 owner／admin（例如被降級）。平台不再交
         # 新 token，但重新授權修不好角色——觸發 reauth 只會讓 HA 卡在一個完成不了

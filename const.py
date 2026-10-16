@@ -102,6 +102,12 @@ CONF_TUNNEL_ID = "tunnel_id"
 # its hostname(s) come from the access detail routes[].hostname instead.
 CONF_SUBDOMAIN = "subdomain"
 
+# 這個 entry 是哪一台 Home Assistant 建的（#31：一個家只能綁一台）。
+# uid 來自 HA 自己的 instance id，label 只是給人看的。平台用 uid 認人，
+# 所以還原備份到另一台機器時，entry 帶著舊 uid 進來 ⇒ 本機守線會攔下來。
+CONF_INSTANCE_UID = "instance_uid"
+CONF_INSTANCE_LABEL = "instance_label"
+
 # --- MCP（#270 Smart Home MCP）---
 # 社群 integration 的 HA domain（github.com/homeassistant-ai/ha-mcp-integration，
 # manifest.json domain 實測 == 此字串）。偵測三態時用它查 config entries / manifest。
@@ -139,10 +145,17 @@ ERR_NO_HOMES = "no_homes"
 ERR_NO_ACCESSES = "no_accesses"
 ERR_UNKNOWN = "unknown"
 ERR_INSUFFICIENT_ROLE = "insufficient_role"
+# 這個家已經綁在另一台 Home Assistant 上（平台 409 ``already_bound``）。
+ERR_ALREADY_BOUND = "already_bound"
 
 # Platform 403 body `error` when the user is a workspace member but not an
 # owner/admin — tunnel tokens are a setup-level permission on the platform.
 ERROR_INSUFFICIENT_ROLE = "insufficient_role"
+
+# Platform 409 body `error`：這個家／門禁已經綁定另一台 HA 實例。平台不會把同一
+# 條 tunnel 的權杖發給第二台——兩台同時接上同一條 tunnel 時 Cloudflare 會輪流把
+# 請求送到其中一台，使用者會隨機登入到錯的那台（#31）。
+ERROR_ALREADY_BOUND = "already_bound"
 
 # Platform 404 body `error` when the smart home / security access itself does not
 # exist (ha_api ``_get_home_with_access`` / ``_get_sa_with_access``). Only a JSON

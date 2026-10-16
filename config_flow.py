@@ -8,6 +8,7 @@ from http import HTTPStatus
 import logging
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import aiohttp
 import voluptuous as vol
@@ -21,6 +22,7 @@ from homeassistant.helpers.config_entry_oauth2_flow import (
 )
 
 from .api_client import (
+    AlreadyBoundError,
     ApiError,
     AuthenticationError,
     InsufficientRoleError,
@@ -35,6 +37,8 @@ from .const import (
     API_PATH_WORKSPACES,
     CONF_HOME_ID,
     CONF_HOME_NAME,
+    CONF_INSTANCE_LABEL,
+    CONF_INSTANCE_UID,
     CONF_PRODUCT_TYPE,
     CONF_SUBDOMAIN,
     CONF_TUNNEL_ID,
@@ -43,6 +47,7 @@ from .const import (
     CONF_WORKSPACE_NAME,
     DEVICE_CODE_GRANT_TYPE,
     DOMAIN,
+    ERR_ALREADY_BOUND,
     ERR_CANNOT_CONNECT,
     ERR_INSUFFICIENT_ROLE,
     ERR_INVALID_AUTH,
@@ -57,6 +62,7 @@ from .const import (
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
 )
+from .instance_identity import async_instance_identity
 from .oauth2 import create_implementation
 from .oauth_callback_view import async_register_woow_callback_view
 
@@ -309,9 +315,11 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         # Extract error detail from response body
         error_code = ""
+        parsed: dict[str, Any] | None = None
         try:
             body = await resp.json()
             if isinstance(body, dict):
+                parsed = body
                 error_code = body.get("error", "")
                 detail = body.get("detail", error_code)
             else:
@@ -320,7 +328,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             detail = await resp.text()
 
         message = f"{resp.status} {detail}" if detail else str(resp.status)
-        raise api_error_for(resp.status, error_code, message)
+        raise api_error_for(resp.status, error_code, message, parsed)
 
     async def async_step_select_workspace(
         self, user_input: dict[str, Any] | None = None
@@ -545,16 +553,36 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         _LOGGER.debug("Fetching tunnel token for %s %s", product_type, instance_id)
+        # #31：取權杖＝向平台宣告「這台 HA 要綁這個家」。帶上本機 uid，平台才
+        # 能在第二台來要同一個家時回 409 而不是再發一份權杖。
+        this_uid, this_label = await async_instance_identity(self.hass)
+        identity = urlencode({"instance_uid": this_uid, "instance_label": this_label})
         try:
             if is_sa:
                 path = API_PATH_SA_ACCESS_TUNNEL_TOKEN.format(access_id=instance_id)
             else:
                 path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=instance_id)
-            tunnel_data = await self._async_api_request("GET", path)
+            tunnel_data = await self._async_api_request("GET", f"{path}?{identity}")
             _LOGGER.debug(
                 "Tunnel token fetched; tunnel_id=%s, subdomain=%s",
                 tunnel_data.get("tunnel_id"),
                 tunnel_data.get("subdomain"),
+            )
+        except AlreadyBoundError as err:
+            # 平台已經把這個家綁給另一台 HA。這裡**不能**往下建 entry：entry 一
+            # 建起來就會起 cloudflared，變成第二個接上同一條 tunnel 的 connector
+            # ——使用者的對外網址會隨機連到錯的機器（#31）。
+            _LOGGER.warning(
+                "%s %s is already bound to another Home Assistant installation "
+                "(%s); refusing to create a second binding",
+                product_type, instance_id, err.bound_to or "unknown",
+            )
+            return self.async_abort(
+                reason=ERR_ALREADY_BOUND,
+                description_placeholders={
+                    "bound_to": err.bound_to or "?",
+                    "bound_at": err.bound_at or "?",
+                },
             )
         except InsufficientRoleError:
             # 成員看得到清單，但 tunnel token 只給 owner／admin；重新授權修不好。
@@ -588,6 +616,8 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             CONF_HOME_NAME: instance_name,
             CONF_TUNNEL_TOKEN: tunnel_data["tunnel_token"],
             CONF_TUNNEL_ID: tunnel_data["tunnel_id"],
+            CONF_INSTANCE_UID: this_uid,
+            CONF_INSTANCE_LABEL: this_label,
         }
         # Security Access tunnel-token carries no subdomain; the hostname(s) are
         # derived live from the access routes by the coordinator.

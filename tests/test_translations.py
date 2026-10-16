@@ -51,9 +51,12 @@ def _abort_reasons_the_flow_can_raise() -> set[str]:
     """
     reasons = set(_REASON.findall(inspect.getsource(config_entry_oauth2_flow)))
     reasons |= set(_REASON.findall(inspect.getsource(cf)))
+    # ⚠ 別把這條收回 ``async_abort(reason=X)`` 的單行形狀——帶
+    # description_placeholders 的 abort 會換行，收窄就等於讓新的 reason 靜默
+    # 逃過這個測試（#31 的 already_bound 第一版就是這樣漏掉的）。
     reasons |= {
         getattr(cf, name)
-        for name in re.findall(r"async_abort\(reason=(ERR_\w+)\)", inspect.getsource(cf))
+        for name in re.findall(r"reason=(ERR_\w+)", inspect.getsource(cf))
     }
     # _abort_if_unique_id_configured / flow manager 內建
     reasons |= {"already_configured", "already_in_progress"}
