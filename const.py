@@ -41,6 +41,8 @@ API_PATH_WORKSPACE_HOMES = "/api/smarthome/workspaces/{workspace_id}/homes"
 API_PATH_HOME = "/api/smarthome/homes/{home_id}"
 API_PATH_HOME_TUNNEL_TOKEN = "/api/smarthome/homes/{home_id}/tunnel-token"
 API_PATH_HOME_STATUS = "/api/smarthome/homes/{home_id}/status"
+# 移除整合時把綁定讓出來（DELETE），讓下一台 HA 可以接這個家（平台 #1766）。
+API_PATH_HOME_TUNNEL_BINDING = "/api/smarthome/homes/{home_id}/tunnel-binding"
 
 # API endpoint paths (Security Access)
 # Note: the workspace list is product-agnostic (paas-platform serves both product
@@ -55,6 +57,9 @@ API_PATH_SA_ACCESS_TUNNEL_TOKEN = (
     "/api/security-access/accesses/{access_id}/tunnel-token"
 )
 API_PATH_SA_ACCESS_STATUS = "/api/security-access/accesses/{access_id}/status"
+API_PATH_SA_TUNNEL_BINDING = (
+    "/api/security-access/accesses/{access_id}/tunnel-binding"
+)
 
 # OAuth2 endpoints
 OAUTH2_AUTHORIZE = "/oauth2/authorize"
