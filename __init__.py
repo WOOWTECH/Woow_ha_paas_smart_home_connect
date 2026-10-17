@@ -476,6 +476,9 @@ async def async_remove_entry(
 ) -> None:
     """Clean up resources when a config entry is removed."""
     ir.async_delete_issue(hass, DOMAIN, instance_deleted_issue_id(entry.entry_id))
+    # ⚠ 順序：先放掉平台上的綁定，再撤銷 OAuth 權杖——反過來的話，放綁定那一槍會
+    # 帶著已經失效的權杖出去，平台回 401，使用者就得自己去後台按「解除綁定」（#31）。
+    await _async_release_platform_binding(hass, entry)
     await _async_revoke_platform_token(hass, entry)
 
     # Only clean up binary if no other entries remain for this domain
@@ -487,6 +490,50 @@ async def async_remove_entry(
     if not remaining:
         tunnel_manager = CloudflaredManager(hass)
         await tunnel_manager.cleanup_binary()
+
+
+async def _async_release_platform_binding(
+    hass: HomeAssistant, entry: WoowConfigEntry
+) -> None:
+    """使用者移除整合 ⇒ 告訴平台「這個家我不要了」，讓下一台 HA 能接（#31）。
+
+    平台側一個家只發一份 tunnel 權杖（#1766），綁定記著是哪一台拿走的。沒有這一槍
+    的話，換機器／重灌／RMA 都會卡住：新機器選那個家只會拿到 409，而使用者看不出
+    要去後台按「解除綁定」。
+
+    **一律 best-effort**：平台連不上、權杖已過期、網路不通……都不可以讓「移除整合」
+    失敗——使用者按了刪除就是要刪掉，本機該清的東西已經清完了。失敗時留一行
+    warning 指出補救方式（後台解綁），這是使用者唯一看得到的線索。
+
+    帶的是 entry 裡**存下來的** uid（建立它的那台機器），不是現在這台的 uid：設定被
+    還原到別台機器時兩者不同，而平台只認原本的持有者。
+    """
+    instance_uid = entry.data.get(CONF_INSTANCE_UID, "")
+    if not instance_uid:
+        # 0.4.11 以前建立、而且從來沒有被重新啟動過蓋章的 entry。平台那邊會是
+        # legacy 綁定，照樣放得掉（平台對 legacy 不比對 uid）。
+        _LOGGER.debug("Entry has no stored instance uid; releasing as legacy")
+
+    product_type = entry.data.get(CONF_PRODUCT_TYPE, PRODUCT_SMART_HOME)
+    instance_id = entry.data.get(CONF_HOME_ID)
+    if instance_id is None:
+        return
+    try:
+        implementation = await async_get_config_entry_implementation(hass, entry)
+        client = WoowPaasApiClient(OAuth2Session(hass, entry, implementation),
+                                   API_BASE_URL)
+        if product_type == PRODUCT_SECURITY_ACCESS:
+            await client.release_access_tunnel_binding(instance_id, instance_uid)
+        else:
+            await client.release_tunnel_binding(instance_id, instance_uid)
+    except Exception:  # noqa: BLE001 - 移除整合不能因為平台連不上而失敗
+        _LOGGER.warning(
+            "Could not tell the platform that this installation no longer holds "
+            "%s %s. The binding stays on the platform, so another Home Assistant "
+            "cannot connect to it until somebody releases it in the WOOW PaaS "
+            "portal (the smart home's \"Release binding\" action)",
+            product_type, instance_id, exc_info=True,
+        )
 
 
 async def _async_revoke_platform_token(

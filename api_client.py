@@ -14,10 +14,12 @@ from homeassistant.helpers.config_entry_oauth2_flow import OAuth2Session
 from .const import (
     API_PATH_HOME,
     API_PATH_HOME_STATUS,
+    API_PATH_HOME_TUNNEL_BINDING,
     API_PATH_HOME_TUNNEL_TOKEN,
     API_PATH_SA_ACCESS,
     API_PATH_SA_ACCESS_STATUS,
     API_PATH_SA_ACCESS_TUNNEL_TOKEN,
+    API_PATH_SA_TUNNEL_BINDING,
     API_PATH_SA_WORKSPACE_ACCESSES,
     API_PATH_SA_WORKSPACES,
     API_PATH_WORKSPACE_HOMES,
@@ -210,6 +212,26 @@ class WoowPaasApiClient:
         _LOGGER.debug("Fetched tunnel token for home %s", home_id)
         return data
 
+    async def release_tunnel_binding(
+        self, home_id: int, instance_uid: str = ""
+    ) -> dict[str, Any]:
+        """Tell the platform this installation no longer holds the smart home.
+
+        使用者在 HA 移除整合時呼叫（#31 / 平台 #1766）：不送這一槍的話，平台上的
+        綁定會一直記著這台機器，下一台要接就得先有人去後台按「解除綁定」——換機器、
+        重灌、RMA 全部卡住。
+
+        只有**持有者自己**放得掉（平台比對 `instance_uid`），所以要帶著建立 entry
+        時存下來的那一個，不是「現在這台的 uid」——設定被還原到別台機器時兩者會不同。
+
+        Raises:
+            ApiError: 平台拒絕或連不上（呼叫端要吞掉，移除整合不能因此失敗）。
+
+        """
+        path = API_PATH_HOME_TUNNEL_BINDING.format(home_id=home_id)
+        path += _identity_query(instance_uid, "")
+        return await self._request("DELETE", path)
+
     async def get_home_status(self, home_id: int) -> dict[str, Any]:
         """Fetch updated status for a smart home.
 
@@ -293,6 +315,14 @@ class WoowPaasApiClient:
         data = await self._request("GET", path)
         _LOGGER.debug("Fetched tunnel token for access %s", access_id)
         return data
+
+    async def release_access_tunnel_binding(
+        self, access_id: int, instance_uid: str = ""
+    ) -> dict[str, Any]:
+        """Mirror of ``release_tunnel_binding`` for a security access."""
+        path = API_PATH_SA_TUNNEL_BINDING.format(access_id=access_id)
+        path += _identity_query(instance_uid, "")
+        return await self._request("DELETE", path)
 
     async def get_access_status(self, access_id: int) -> dict[str, Any]:
         """Fetch updated status for a security access.
