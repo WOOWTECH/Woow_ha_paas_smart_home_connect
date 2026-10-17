@@ -24,7 +24,10 @@ try:
 except ImportError:  # 在 HA core 樹內執行（見 conftest.py）
     from tests.common import MockConfigEntry
 
-from custom_components.woow_paas_smart_home import async_setup_entry
+from custom_components.woow_paas_smart_home import (
+    async_remove_entry,
+    async_setup_entry,
+)
 from custom_components.woow_paas_smart_home.api_client import (
     AlreadyBoundError,
     ApiError,
@@ -35,6 +38,7 @@ from custom_components.woow_paas_smart_home.const import (
     CONF_INSTANCE_UID,
     DOMAIN,
     ERROR_ALREADY_BOUND,
+    PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
 )
 from homeassistant.core import HomeAssistant
@@ -202,3 +206,119 @@ async def test_platform_says_bound_elsewhere_keeps_the_tunnel_down(
     assert entry.data["tunnel_token"] == "cached-token"  # 快取還在，但沒有被拿去用
     manager.return_value.ensure_binary.assert_not_called()
     manager.return_value.start_tunnel.assert_not_called()
+
+
+# ---- 移除整合 ⇒ 把綁定讓出來 ----------------------------------------------------
+#
+# 2026-10-17 現場：使用者在 .121 把舊整合刪掉了，但平台那邊的綁定還記著它——沒有這
+# 一槍的話，下一台選同一個家只會拿到 409，而使用者完全看不出要去後台按「解除綁定」。
+
+
+async def test_removing_the_entry_releases_the_platform_binding(
+    hass: HomeAssistant,
+) -> None:
+    entry = _entry(hass, **{CONF_INSTANCE_UID: THIS_UID})
+    client = AsyncMock()
+
+    with (
+        patch("custom_components.woow_paas_smart_home."
+              "async_get_config_entry_implementation", AsyncMock()),
+        patch("custom_components.woow_paas_smart_home.OAuth2Session"),
+        patch("custom_components.woow_paas_smart_home.WoowPaasApiClient",
+              return_value=client),
+        patch("custom_components.woow_paas_smart_home."
+              "_async_revoke_platform_token", AsyncMock()) as revoke,
+    ):
+        await async_remove_entry(hass, entry)
+
+    client.release_tunnel_binding.assert_awaited_once_with(1, THIS_UID)
+    assert revoke.await_count == 1
+
+
+async def test_release_happens_before_the_token_is_revoked(
+    hass: HomeAssistant,
+) -> None:
+    """⚠ 顛倒過來的話，放綁定那一槍會帶著已失效的權杖出去 ⇒ 平台回 401。"""
+    entry = _entry(hass, **{CONF_INSTANCE_UID: THIS_UID})
+    order: list[str] = []
+    client = AsyncMock()
+    client.release_tunnel_binding.side_effect = lambda *a, **k: order.append("release")
+
+    async def _revoke(*_args, **_kwargs):
+        order.append("revoke")
+
+    with (
+        patch("custom_components.woow_paas_smart_home."
+              "async_get_config_entry_implementation", AsyncMock()),
+        patch("custom_components.woow_paas_smart_home.OAuth2Session"),
+        patch("custom_components.woow_paas_smart_home.WoowPaasApiClient",
+              return_value=client),
+        patch("custom_components.woow_paas_smart_home."
+              "_async_revoke_platform_token", _revoke),
+    ):
+        await async_remove_entry(hass, entry)
+
+    assert order == ["release", "revoke"]
+
+
+async def test_a_platform_that_cannot_be_reached_does_not_block_removal(
+    hass: HomeAssistant,
+) -> None:
+    """使用者按了刪除就是要刪掉——平台連不上不可以讓移除失敗。"""
+    entry = _entry(hass, **{CONF_INSTANCE_UID: THIS_UID})
+    client = AsyncMock()
+    client.release_tunnel_binding.side_effect = ApiError(500, "boom")
+
+    with (
+        patch("custom_components.woow_paas_smart_home."
+              "async_get_config_entry_implementation", AsyncMock()),
+        patch("custom_components.woow_paas_smart_home.OAuth2Session"),
+        patch("custom_components.woow_paas_smart_home.WoowPaasApiClient",
+              return_value=client),
+        patch("custom_components.woow_paas_smart_home."
+              "_async_revoke_platform_token", AsyncMock()),
+    ):
+        await async_remove_entry(hass, entry)  # 不可以拋
+
+
+async def test_security_access_entry_uses_its_own_release_endpoint(
+    hass: HomeAssistant,
+) -> None:
+    entry = _entry(hass, **{CONF_INSTANCE_UID: THIS_UID,
+                            "product_type": PRODUCT_SECURITY_ACCESS})
+    client = AsyncMock()
+
+    with (
+        patch("custom_components.woow_paas_smart_home."
+              "async_get_config_entry_implementation", AsyncMock()),
+        patch("custom_components.woow_paas_smart_home.OAuth2Session"),
+        patch("custom_components.woow_paas_smart_home.WoowPaasApiClient",
+              return_value=client),
+        patch("custom_components.woow_paas_smart_home."
+              "_async_revoke_platform_token", AsyncMock()),
+    ):
+        await async_remove_entry(hass, entry)
+
+    client.release_access_tunnel_binding.assert_awaited_once_with(1, THIS_UID)
+    client.release_tunnel_binding.assert_not_awaited()
+
+
+async def test_release_sends_the_stored_uid_not_this_machines(
+    hass: HomeAssistant,
+) -> None:
+    """設定被還原到別台機器時兩者不同；平台只認原本的持有者。"""
+    entry = _entry(hass, **{CONF_INSTANCE_UID: OTHER_UID})
+    client = AsyncMock()
+
+    with (
+        patch("custom_components.woow_paas_smart_home."
+              "async_get_config_entry_implementation", AsyncMock()),
+        patch("custom_components.woow_paas_smart_home.OAuth2Session"),
+        patch("custom_components.woow_paas_smart_home.WoowPaasApiClient",
+              return_value=client),
+        patch("custom_components.woow_paas_smart_home."
+              "_async_revoke_platform_token", AsyncMock()),
+    ):
+        await async_remove_entry(hass, entry)
+
+    client.release_tunnel_binding.assert_awaited_once_with(1, OTHER_UID)
