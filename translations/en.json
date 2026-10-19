@@ -38,7 +38,7 @@
       },
       "user": {
         "title": "Choose a connection service",
-        "description": "Remote access connects you to Home Assistant from anywhere. Remote access + MCP also connects AI tools. After sign-in, missing workspaces and services are created with a seven-day trial. The trial pauses at expiry; paid use requires your choice.",
+        "description": "Remote access connects you to Home Assistant from anywhere. Remote access + MCP also connects AI tools. After sign-in, missing workspaces and services are created with a seven-day trial. The trial pauses at expiry; paid use requires your choice. Choosing MCP automatically downloads and enables the woowtech MCP component. Its connection URL appears under device diagnostics.",
         "data": {
           "service_kind": "Service type"
         }
@@ -81,7 +81,8 @@
       "unknown": "An unexpected error occurred.",
       "insufficient_role": "Only owners and admins of this workspace can connect it. Ask one of them to set up this Home Assistant.",
       "onboarding_failed": "Setup has not finished. Try adding the integration again shortly; existing records are kept. Check the service in [woowtech](https://aiot.woowtech.io/woow).",
-      "trial_expired": "The seven-day trial has ended. Choose a paid plan in [woowtech](https://aiot.woowtech.io/woow) to continue. Reconnecting does not restart the trial."
+      "trial_expired": "The seven-day trial has ended. Choose a paid plan in [woowtech](https://aiot.woowtech.io/woow) to continue. Reconnecting does not restart the trial.",
+      "mcp_ha_unsupported": "Remote access + MCP requires Home Assistant 2026.6.0 or newer. Update HA first, or use remote access by itself."
     }
   },
   "entity": {
@@ -108,11 +109,13 @@
         "state": {
           "not_installed": "Not installed",
           "installed_not_running": "Installed, not running",
-          "running": "Running"
+          "running": "Running",
+          "installing": "Downloading MCP component",
+          "starting": "Starting MCP server"
         }
       },
       "mcp_connect_url": {
-        "name": "MCP connection availability"
+        "name": "MCP URL"
       }
     }
   },
@@ -120,6 +123,26 @@
     "instance_deleted": {
       "title": "{name} was deleted on woowtech",
       "description": "\"{name}\" no longer exists on the woowtech platform, so its tunnel has been stopped and its sensors are unavailable. Remove this integration entry under Settings → Devices & services → woowtech Smart Home. If the deletion was a mistake, this notice clears by itself once the platform reports the instance again."
+    },
+    "mcp_ha_unsupported": {
+      "title": "Update Home Assistant",
+      "description": "MCP requires Home Assistant 2026.6.0 or newer. Setup resumes after updating HA. Remote access continues independently."
+    },
+    "mcp_install_failed": {
+      "title": "MCP installation is incomplete",
+      "description": "Check GitHub connectivity and configuration-directory write access. Setup retries every five minutes. Existing component files are preserved; repair an incomplete installation in HACS."
+    },
+    "mcp_disabled": {
+      "title": "MCP server is disabled",
+      "description": "Enable HA-MCP Server in Settings → Devices & services. Automatic setup respects a manually disabled server."
+    },
+    "mcp_webhook_disabled": {
+      "title": "MCP remote access is disabled",
+      "description": "Enable webhook access in HA-MCP Server options. The MCP URL appears in device diagnostics when the endpoint is ready."
+    },
+    "mcp_setup_failed": {
+      "title": "MCP server setup is incomplete",
+      "description": "Check HA-MCP messages in Settings → System → Repairs. Setup checks again every five minutes while remote access continues."
     }
   }
 }

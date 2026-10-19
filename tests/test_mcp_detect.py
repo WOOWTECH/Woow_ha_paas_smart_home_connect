@@ -1,16 +1,7 @@
-"""Unit tests for async_detect_ha_mcp_state (社群 ha_mcp_tools 三態偵測).
+"""MCP readiness: tools-only/loaded entries do not prove the server is ready.
 
-用 MagicMock hass 隔離測試——偵測函式只讀 hass.config_entries.async_loaded_entries
-（純記憶體）與一次 executor 的 os.path.isfile；兩者皆 mock，故不需真實 HA runtime。
-
-設計依據（#270 §5）：偵測結果三態
-  - running               : 有任一 LOADED 且未停用的 ha_mcp_tools config entry
-  - installed_not_running : 無 LOADED entry，但 manifest.json 在磁碟上
-  - not_installed         : 無 LOADED entry，且 manifest.json 不在磁碟上
-
-其中 installed/not_installed 刻意用「manifest 檔是否存在」判定，而非
-async_get_integration/IntegrationNotFound——後者會把「manifest 在磁碟但被
-version/blocked/corrupt/陳舊快取拒絕」誤判成未安裝（見 test_* 註解的 skeptic 反例）。
+A running manager plus initialized forwarding configuration is required.
+The manifest check still distinguishes absent files from an inactive component.
 """
 from __future__ import annotations
 
@@ -31,6 +22,7 @@ def _hass(*, loaded_entries: list, manifest_isfile: bool | None) -> MagicMock:
         executor（測試會另行斷言未呼叫）。
     """
     hass = MagicMock()
+    hass.data = {}
     hass.config_entries.async_loaded_entries.return_value = loaded_entries
     hass.config.path.return_value = "/config/custom_components/ha_mcp_tools/manifest.json"
     if manifest_isfile is None:
@@ -41,8 +33,13 @@ def _hass(*, loaded_entries: list, manifest_isfile: bool | None) -> MagicMock:
 
 
 async def test_detect_running_when_loaded_entry_present() -> None:
-    """有 LOADED entry → running，且不觸碰磁碟（純記憶體快路徑）。"""
-    hass = _hass(loaded_entries=[MagicMock()], manifest_isfile=None)
+    """已載入的 server 真正啟動且完成 forwarding 設定 → running，不觸碰磁碟。"""
+    entry = MagicMock()
+    entry.data = {"entry_type": "server"}
+    hass = _hass(loaded_entries=[entry], manifest_isfile=None)
+    manager = MagicMock()
+    manager.is_running = True
+    hass.data[HA_MCP_DOMAIN] = {"manager": manager, "webhook": {"ready": True}}
 
     result = await async_detect_ha_mcp_state(hass)
 

@@ -18,12 +18,11 @@ class TunnelStatus(StrEnum):
 
 
 class McpIntegrationState(StrEnum):
-    """社群 ha_mcp_tools integration 的三態偵測值（見 #270 §5）.
-
-    純 HA 本地偵測結果，作為 MCP sensor 的 state 機器值。
-    """
+    """Local MCP component installation and server startup states."""
 
     NOT_INSTALLED = "not_installed"
+    INSTALLING = "installing"
+    STARTING = "starting"
     INSTALLED_NOT_RUNNING = "installed_not_running"
     RUNNING = "running"
 

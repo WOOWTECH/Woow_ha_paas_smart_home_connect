@@ -8,5 +8,5 @@
   "issue_tracker": "https://github.com/WOOWTECH/Woow_ha_paas_smart_home_connect/issues",
   "iot_class": "cloud_polling",
   "requirements": [],
-  "version": "0.4.13"
+  "version": "0.4.14"
 }

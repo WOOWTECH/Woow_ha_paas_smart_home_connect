@@ -86,6 +86,9 @@ async def test_async_step_user_routes_app_to_device(
 async def test_async_step_user_routes_browser_to_web_flow(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(
+        "custom_components.woow_paas_smart_home.config_flow.mcp_supported", lambda: True
+    )
     hass.http = MagicMock()
     flow = ConfigFlow()
     flow.hass = hass
@@ -111,6 +114,21 @@ async def test_async_step_user_routes_browser_to_web_flow(
 
     device_step.assert_not_awaited()
     super_step.assert_awaited_once()
+
+
+async def test_mcp_unsupported_ha_stops_before_oauth(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hass.http = MagicMock()
+    flow = ConfigFlow()
+    flow.hass = hass
+    monkeypatch.setattr(
+        "custom_components.woow_paas_smart_home.config_flow.mcp_supported", lambda: False
+    )
+    result = await flow.async_step_user({"service_kind": "remote_access_mcp"})
+    assert result["type"] == "abort"
+    assert result["reason"] == "mcp_ha_unsupported"
+    assert flow._service_kind is None
 
 
 def _response(status: int, payload: dict) -> MagicMock:

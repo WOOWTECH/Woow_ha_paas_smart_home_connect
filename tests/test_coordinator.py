@@ -270,6 +270,27 @@ async def test_sh_mcp_absent_defaults_empty(hass: HomeAssistant) -> None:
     assert data.mcp_integration_state is None
 
 
+async def test_mcp_detection_failure_drops_previous_url(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = MagicMock()
+    api.get_home_status = AsyncMock(return_value={"tunnel_status": "connected", "mcp": "ha_mcp_tools"})
+    coord = _coordinator(hass, api=api, running=True, product_type=PRODUCT_SMART_HOME, subdomain="synthetic.invalid")
+    coord.data = TunnelStatusData(
+        status=TunnelStatus.CONNECTED, subdomain_url="https://synthetic.invalid",
+        mcp="ha_mcp_tools", mcp_integration_state=McpIntegrationState.RUNNING,
+        mcp_webhook_id="old_synthetic_key",
+    )
+    monkeypatch.setattr(
+        "custom_components.woow_paas_smart_home.coordinator.async_detect_ha_mcp_state",
+        AsyncMock(side_effect=RuntimeError("incompatible component")),
+    )
+    data = await coord._async_update_data()
+    assert data.mcp_connect_url is None
+    assert data.mcp_integration_state is None
+    assert data.status == TunnelStatus.CONNECTED
+
+
 async def test_sh_transient_failure_preserves_mcp(hass: HomeAssistant) -> None:
     """暫時性 API 失敗保留上一輪 mcp 字串（避免 sensor 存在性 flapping）。
 
@@ -492,7 +513,7 @@ def _mcp_entry_stub(
     options: dict[str, object] = {}
     if enable_webhook is not None:
         options["enable_webhook"] = enable_webhook
-    data: dict[str, object] = {}
+    data: dict[str, object] = {"entry_type": "server"}
     if webhook_id is not None:
         data["webhook_id"] = webhook_id
     return types.SimpleNamespace(data=data, options=options)
@@ -503,6 +524,10 @@ def _hass_with_loaded(entries: list[object]) -> types.SimpleNamespace:
     hass.config_entries = types.SimpleNamespace(
         async_loaded_entries=lambda domain: entries
     )
+    hass.data = {
+        "ha_mcp_tools": {"manager": types.SimpleNamespace(is_running=True), "webhook": {"ready": True}},
+        "webhook": {e.data["webhook_id"]: types.SimpleNamespace(domain="ha_mcp_tools", local_only=False, allowed_methods={"POST"}) for e in entries if e.data.get("webhook_id")},
+    }
     return hass
 
 

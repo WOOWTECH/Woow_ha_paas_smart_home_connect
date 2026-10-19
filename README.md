@@ -62,31 +62,38 @@ Security Access 尚未接上；斷線後若新 connector 起不來，需手動 `
 選擇 Security Access 產品時，每一條 application route 會對應一個獨立的 URL sensor，並隨 PaaS 端的 route 異動在 30 秒輪詢內自動增減（免 reload）。
 
 ⚠️ **修改 route 的 hostname（subdomain prefix）等同重建**：PaaS 端的 hostname 是不可變的識別錨點，改名在後端是「刪除舊 route + 建立新 route」（產生新的 route id）。因此在 PaaS 改 route hostname 後，HA 端原本的 sensor 會變成 unavailable、並出現一個全新的 sensor，**該 route 的歷史資料與參照舊 entity_id 的 automation／dashboard 不會延續**。若只是調整 `service_url`、`is_protected` 等其他欄位則 route id 不變，sensor 會原地更新、保留歷史。
-## MCP 連線可用性與私密網址
+## MCP 自動安裝與連線網址
 
-訂閱含 MCP 的方案時，`MCP Tools` 顯示本機整合的執行狀態，原 `MCP URL`
-實體改為顯示連線可用性：`available`、`unavailable`，尚無資料時為 `unknown`。
-`available` 表示已有 tunnel URL 與已載入 MCP 整合的 webhook 識別資料；
-它不代替對外 HTTP、身分驗證或工具權限的實際檢查。
+選擇「遠端存取＋MCP」後，本整合會在確認平台訂閱含 MCP 時：
 
-完整 MCP 網址包含 webhook 憑證，不再放進 HA sensor 的 state 或屬性。
-HA 管理員請到「設定 → 裝置與服務 → Home Assistant MCP → HA-MCP Server
-→ 設定」的原生 MCP 選項流程取得 **Connect URL(s)／Remote connect URL**，
-再交給已授權的 client。若網址不是本次 Smart Home Connect 的對外主機，
-在 MCP 的 External URL 選項填入該訂閱的 tunnel URL，儲存後重新開啟設定
-確認網址；不要將 webhook 憑證放回一般 sensor 或 dashboard。
-一般使用者可讀的 dashboard、模板與歷史頁面只能取得可用性狀態。
+1. 檢查 Home Assistant 版本（嵌入式 MCP 需 2026.6.0 以上）。
+2. 尚未安裝時，下載 `WOOWTECH/Woow_ha_ai_mcp` 的固定 commit
+   `c7b8d79fea7228007d7af9291f3a03afc4d3e071`，校驗 SHA-256，再安裝其
+   `custom_components/ha_mcp_tools`（1.2.2）。現有套件檔案不會被覆蓋。
+3. 透過 HA-MCP 原生流程建立唯一的 **HA-MCP Server**，由它安裝 server
+   依賴、產生密鑰並啟動 webhook。首次安裝使用與 HACS 相同的快取更新方式；
+   不會自動重新啟動整台 HA。安裝與遠端隧道各自運作。
+4. 已有 server 時直接沿用；僅有 tools entry 時仍會建立 server。
+   手動停用 server、關閉 webhook 或自訂 OAuth 的選擇會保留。
+5. 在診斷區顯示「MCP 工具」及 **MCP URL**。安裝中、啟動中分開顯示；
+   確認伺服器運作且 webhook 註冊完成後才提供完整 URL。
 
-既有實體的 unique_id 保留，因此已登錄的 entity_id 與裝置關係保留。
-原本把該 sensor 當作網址使用的 automation、template 或 client 設定需改用
-管理員提供的連線資料；這次更新改變的是 state 契約，不提供原網址的兼容欄位。
+MCP server 使用 HA-MCP 的原生穩定版安裝及更新設定。固定 commit 校驗的是
+HA component，不表示將 PyPI 的 `ha-mcp` server 或其依賴也鎖在相同版本。
+單選遠端存取、Security Access 與未含 MCP 的訂閱不會觸發 MCP 安裝。
+退訂會移除本整合的 MCP sensors，但不刪除可能被其他用途使用的 HA-MCP server。
 
-更新只防止新的 state／attribute 憑證發布。舊 recorder、logbook、備份或
-已複製的網址不會因此清除或失效。正式更新前應由管理員盤點使用者，安排
-該 MCP endpoint 的憑證輪換，再依保存政策處理該實體的歷史與備份。
-本整合不會自動 purge 歷史、變更 HA-MCP 身分驗證或關閉其寫入工具。
-伺服器的 HA 管理員驗證、唯讀限制、套件隔離與外部 client OAuth 相容性
-仍須各自驗證。
+網址格式為 `https://<此 Smart Home 的隧道主機>/api/webhook/<隨機密鑰>`。
+HTTPS 加密的是傳輸；網址路徑本身是存取密鑰，並非將 URL 字串加密。
+若原有 server 啟用 HA OAuth，client 仍需完成該驗證。
+MCP URL 恢復放在 sensor 的 state；既有 unique_id、entity_id 及裝置關係保留。
+點開 sensor 詳細視窗即可選取複製；不另外在 attributes 重複存放 webhook 密鑰。
+沒有可用端點時顯示 unknown，不會保留上一個密鑰。
+
+此 sensor 可被有 HA 狀態讀取權限的帳號、模板與 recorder 讀取。
+若不希望保存 URL 歷史，可在 `recorder.exclude.entities` 加入實際的 sensor entity_id；
+既有名稱可能仍為 `sensor.<裝置>_mcp_connection_availability`，因此請以實體設定為準。
+本整合不會修改全站 recorder 設定或清除歷史，也不會輪換既有密鑰。
 
 ### Portable watchdog regression gate
 

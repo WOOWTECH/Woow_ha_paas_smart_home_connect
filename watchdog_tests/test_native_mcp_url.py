@@ -1,4 +1,4 @@
-"""Sensor privacy contracts against installed HA runtime; no core test fixtures."""
+"""MCP URL contracts against installed HA runtime; no core test fixtures."""
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -20,16 +20,16 @@ def _sensor(webhook_id="mcp_"+"a"*32, base="https://synthetic.invalid"):
     return McpConnectUrlSensor(coordinator,entry)
 
 
-def test_available_state_never_publishes_endpoint():
+def test_available_state_publishes_complete_endpoint():
     sensor=_sensor()
-    assert sensor.native_value=="available"
+    assert sensor.native_value == "https://synthetic.invalid/api/webhook/mcp_" + "a" * 32
     assert sensor.extra_state_attributes is None
 
 
 @pytest.mark.parametrize("webhook_id,base",[(None,"https://synthetic.invalid"),("mcp_"+"a"*32,"")])
-def test_incomplete_endpoint_has_safe_status(webhook_id,base):
+def test_incomplete_endpoint_has_no_partial_url(webhook_id,base):
     sensor=_sensor(webhook_id,base)
-    assert sensor.native_value=="unavailable"
+    assert sensor.native_value is None
     assert sensor.extra_state_attributes is None
 
 

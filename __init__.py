@@ -66,6 +66,7 @@ from .const import (
 )
 from .coordinator import TunnelCoordinator, instance_deleted_issue_id
 from .instance_identity import async_instance_identity
+from .mcp_setup import async_manage_mcp
 from .oauth2 import create_implementation
 from .oauth_callback_view import async_register_woow_callback_view
 
@@ -452,6 +453,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: WoowConfigEntry) -> bool
 
     # Forward entry setup to sensor platform
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    if product_type == PRODUCT_SMART_HOME:
+        entry.async_create_background_task(
+            hass, async_manage_mcp(hass, entry, coordinator),
+            f"woow_mcp_setup_{entry.entry_id}",
+        )
 
     return True
 

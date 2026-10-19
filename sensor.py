@@ -135,11 +135,11 @@ def _async_remove_legacy_url_entity(
 
 
 class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
-    """社群 ha_mcp_tools integration 的三態狀態 sensor（見 #270 §5）.
+    """woowtech MCP 套件安裝與伺服器啟動狀態。
 
     僅 Smart Home 且該 home 綁定含 MCP 的方案（/status 的 ``mcp == "ha_mcp_tools"``）
-    時才存在。顯示值為 coordinator 每 poll 算好的本地三態偵測結果
-    （``mcp_integration_state``）——未安裝 / 已安裝未啟動 / 運作中。
+    時才存在。顯示值為 coordinator 每 poll 算好的本地偵測結果
+    （``mcp_integration_state``）——未安裝 / 下載中 / 啟動中 / 已安裝未啟動 / 運作中。
 
     存在與否由 :func:`_setup_mcp_sensors` 依訂閱字串冪等 reconcile；顯示值
     的刷新沿用 CoordinatorEntity：每次 30s coordinator update 自動 write state。
@@ -162,7 +162,7 @@ class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        """Return the detected ha_mcp_tools three-state value (None if no data)."""
+        """Return the detected MCP installation/server state (None if no data)."""
         data = self.coordinator.data
         if data is None:
             return None
@@ -170,12 +170,11 @@ class McpStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
 
 class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
-    """MCP endpoint availability without exposing its credential-bearing URL.
+    """The complete MCP endpoint requested for the device diagnostics page.
 
-    HA states are readable by ordinary users and may be recorded. Publish only
-    availability, retaining the existing unique_id and subscription lifecycle.
-    Administrators obtain the endpoint through HA-MCP's native options flow.
-    Previously recorded credentials require separate rotation/history handling.
+    This intentionally includes the secret webhook path, as in the original
+    URL sensor. Preserve the unique_id and do not duplicate secrets in attributes.
+    HA state access and recorder configuration also apply to this credential.
     """
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -193,15 +192,15 @@ class McpConnectUrlSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
 
     @property
     def native_value(self) -> str | None:
-        """Publish availability without exposing the credential-bearing URL."""
+        """Return a complete ready endpoint, or unknown while it is unavailable."""
         data = self.coordinator.data
         if data is None:
             return None
-        return "available" if data.mcp_connect_url else "unavailable"
+        return data.mcp_connect_url
 
     @property
     def extra_state_attributes(self) -> dict[str, str] | None:
-        """Endpoint credentials must never enter entity state attributes."""
+        """Avoid duplicating the credential in additional attributes."""
         return None
 
 

@@ -216,6 +216,8 @@ def test_mcp_status_options_and_unique_id() -> None:
     assert sensor.unique_id == "test_entry_mcp_status"
     assert sensor._attr_options == [
         "not_installed",
+        "installing",
+        "starting",
         "installed_not_running",
         "running",
     ]
@@ -294,12 +296,12 @@ async def test_mcp_reconcile_noop_setup_when_unsubscribed(
 # ---------------------------------------------------------------------------
 
 
-def test_mcp_connect_url_state_is_availability() -> None:
-    """Publish a short status; missing coordinator data remains unknown."""
+def test_mcp_connect_url_state_is_full_url() -> None:
+    """Publish the complete endpoint; missing data remains unknown."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     sensor = McpConnectUrlSensor(coord, _mcp_entry())
 
-    assert sensor.native_value == "available"
+    assert sensor.native_value == coord.data.mcp_connect_url
 
     coord.data = None
     assert sensor.native_value is None
@@ -320,7 +322,7 @@ def test_mcp_connect_url_state_and_attributes_agree_on_absence() -> None:
         _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING, subdomain_url=""),
     ):
         sensor = McpConnectUrlSensor(coord, _mcp_entry())
-        assert sensor.native_value == "unavailable"
+        assert sensor.native_value is None
         assert sensor.extra_state_attributes is None
 
 
@@ -338,7 +340,7 @@ def test_mcp_connect_url_unavailable_without_webhook_id() -> None:
     coord = _mcp_coordinator(
         "ha_mcp_tools", McpIntegrationState.INSTALLED_NOT_RUNNING, webhook_id=None
     )
-    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value == "unavailable"
+    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value is None
 
 
 def test_mcp_connect_url_unavailable_without_tunnel_url() -> None:
@@ -346,27 +348,26 @@ def test_mcp_connect_url_unavailable_without_tunnel_url() -> None:
     coord = _mcp_coordinator(
         "ha_mcp_tools", McpIntegrationState.RUNNING, subdomain_url=""
     )
-    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value == "unavailable"
+    assert McpConnectUrlSensor(coord, _mcp_entry()).native_value is None
 
 
-def test_mcp_connect_url_state_has_no_url_or_webhook_id() -> None:
-    """Even a valid endpoint must not be stored in the state machine."""
+def test_mcp_connect_url_state_contains_complete_endpoint() -> None:
+    """Restore the exact URL state contract requested for device diagnostics."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     url = McpConnectUrlSensor(coord, _mcp_entry()).native_value
 
     assert url is not None
-    assert url == "available"
-    assert "mcp_" not in url
+    assert url == "https://paas-sm-home/api/webhook/mcp_" + "a" * 32
 
 
 def test_mcp_connect_url_is_not_an_enum_sensor() -> None:
-    """Preserve the sensor type while enforcing the safe value contract."""
+    """Preserve the sensor type and unique identity."""
     coord = _mcp_coordinator("ha_mcp_tools", McpIntegrationState.RUNNING)
     sensor = McpConnectUrlSensor(coord, _mcp_entry())
 
     assert sensor.device_class is None
     assert sensor.options is None
-    assert sensor.native_value == "available"
+    assert sensor.native_value == coord.data.mcp_connect_url
 
 
 def test_tunnel_url_sensor_unavailable_after_platform_deletion() -> None:

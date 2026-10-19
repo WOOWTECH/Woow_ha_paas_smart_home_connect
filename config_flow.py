@@ -28,6 +28,7 @@ from .api_client import (
     InsufficientRoleError,
     api_error_for,
 )
+from .mcp_setup import mcp_supported
 from .const import (
     API_BASE_URL,
     API_PATH_HOME_TUNNEL_TOKEN,
@@ -162,6 +163,8 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             kind = user_input.get(CONF_SERVICE_KIND)
             if kind not in (SERVICE_REMOTE_ACCESS, SERVICE_REMOTE_ACCESS_MCP):
                 return self.async_abort(reason=ERR_UNKNOWN)
+            if kind == SERVICE_REMOTE_ACCESS_MCP and not mcp_supported():
+                return self.async_abort(reason="mcp_ha_unsupported")
             self._service_kind = kind
             user_input = None
         # The redirect/window.open web flow can't complete inside the HA

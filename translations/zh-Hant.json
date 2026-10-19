@@ -38,7 +38,7 @@
       },
       "user": {
         "title": "選擇連線服務",
-        "description": "遠端存取：從外部連回 Home Assistant。遠端存取＋MCP：加上 AI 工具連線。登入後，若沒有工作區或所選服務，將自動建立並開始七天免費試用；到期暫停，不會自動收費。",
+        "description": "遠端存取：從外部連回 Home Assistant。遠端存取＋MCP：加上 AI 工具連線。登入後，若沒有工作區或所選服務，將自動建立並開始七天免費試用；到期暫停，不會自動收費。 選擇含 MCP 的服務後，系統會自動下載並啟用 woowtech MCP 套件；診斷資料中的 MCP URL 可供 AI 用戶端連線。",
         "data": {
           "service_kind": "服務類型"
         }
@@ -81,7 +81,8 @@
       "unknown": "發生未預期的錯誤。",
       "insufficient_role": "只有這個工作區的擁有者或管理員可以連線。請他們來設定這台 Home Assistant。",
       "onboarding_failed": "服務尚未完成開通。請稍後重新加入整合；已建立的工作區與服務會保留。也可到 [woowtech](https://aiot.woowtech.io/woow) 查看狀態。",
-      "trial_expired": "七天試用已結束，服務已暫停。請到 [woowtech](https://aiot.woowtech.io/woow) 選擇付費方案後繼續使用，不會重新開啟試用。"
+      "trial_expired": "七天試用已結束，服務已暫停。請到 [woowtech](https://aiot.woowtech.io/woow) 選擇付費方案後繼續使用，不會重新開啟試用。",
+      "mcp_ha_unsupported": "遠端存取＋MCP 需要 Home Assistant 2026.6.0 或更新版本。請先更新 HA；遠端存取仍可單獨使用。"
     }
   },
   "entity": {
@@ -108,11 +109,13 @@
         "state": {
           "not_installed": "未安裝",
           "installed_not_running": "已安裝，未執行",
-          "running": "執行中"
+          "running": "執行中",
+          "installing": "正在下載 MCP 套件",
+          "starting": "正在啟動 MCP 伺服器"
         }
       },
       "mcp_connect_url": {
-        "name": "MCP 連線可用性"
+        "name": "MCP URL"
       }
     }
   },
@@ -120,6 +123,26 @@
     "instance_deleted": {
       "title": "{name} 已在 woowtech 平台上刪除",
       "description": "「{name}」已在 woowtech 平台上刪除，隧道已停止、相關感測器變為無法使用。請到「設定 → 裝置與服務 → woowtech Smart Home」移除這個整合項目。若是誤刪，平台恢復後這則通知會自動消失。"
+    },
+    "mcp_ha_unsupported": {
+      "title": "請更新 Home Assistant",
+      "description": "MCP 伺服器需要 Home Assistant 2026.6.0 以上。更新後系統會自動繼續設定；遠端存取不受此安裝步驟影響。"
+    },
+    "mcp_install_failed": {
+      "title": "MCP 套件尚未安裝完成",
+      "description": "請確認 Home Assistant 能連上 GitHub，且設定目錄可寫入。系統每五分鐘重試一次。已存在的套件不會被覆蓋；若套件檔案不完整，請在 HACS 修復後重試。"
+    },
+    "mcp_disabled": {
+      "title": "MCP 伺服器已停用",
+      "description": "請到「設定 → 裝置與服務 → HA-MCP Server」啟用伺服器。系統會保留你手動停用的設定。"
+    },
+    "mcp_webhook_disabled": {
+      "title": "MCP 對外連線尚未開啟",
+      "description": "請在 HA-MCP Server 的設定中開啟 webhook 遠端連線。完成後，裝置診斷資料會顯示 MCP URL。"
+    },
+    "mcp_setup_failed": {
+      "title": "MCP 伺服器尚未設定完成",
+      "description": "請查看「設定 → 系統 → 修復」中的 HA-MCP 訊息。系統每五分鐘再檢查一次；遠端存取會繼續運作。"
     }
   }
 }
