@@ -538,9 +538,15 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
     async def _async_onboard(self) -> None:
         if self._onboarding_home is None:
+            # The connector runs beside HA. Its origin port is HA's listener,
+            # which can differ from the browser's public proxy port or 8123.
+            ha_port = getattr(getattr(self.hass, 'http', None), 'server_port', 8123)
+            if type(ha_port) is not int or not 1 <= ha_port <= 65535:
+                ha_port = 8123
             result = await self._async_api_request('POST', API_PATH_ONBOARDING, json={
                 'service_kind': self._service_kind,
                 'workspace_id': self._selected_workspace_id,
+                'ha_port': ha_port,
             })
             workspace = result['workspace']
             self._selected_workspace_id = workspace['id']

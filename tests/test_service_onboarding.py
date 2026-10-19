@@ -9,7 +9,7 @@ from custom_components.woow_paas_smart_home.api_client import ApiError
 
 @pytest.fixture
 def flow(hass):
-    hass.http = MagicMock()
+    hass.http = MagicMock(server_port=8123)
     result = ConfigFlow()
     result.hass = hass
     result._service_kind = "remote_access_mcp"
@@ -75,10 +75,24 @@ async def test_create_prepare_wait_preserves_choice(flow, monkeypatch, workspace
     monkeypatch.setattr(flow, "_async_api_request", request)
     await flow._async_onboard()
     assert request.await_args_list[0].kwargs["json"] == {
-        "service_kind": "remote_access_mcp", "workspace_id": workspace_id}
+        "service_kind": "remote_access_mcp", "workspace_id": workspace_id,
+        "ha_port": 8123}
     assert request.await_args_list[1].args == (
         "POST", "/api/smarthome/onboarding/homes/3/prepare")
     assert flow._onboarding_home["state"] == "active"
+
+
+@pytest.mark.parametrize("ha_port", [80, 18243])
+async def test_new_service_uses_actual_ha_listener_port(flow, monkeypatch, ha_port):
+    flow.hass.http.server_port = ha_port
+    home = {"id": 3, "name": "MCP", "state": "active"}
+    request = AsyncMock(side_effect=[
+        {"workspace": {"id": 2, "name": "乙"}, "homes": [home]},
+        {"home": home}, {"home": home},
+    ])
+    monkeypatch.setattr(flow, "_async_api_request", request)
+    await flow._async_onboard()
+    assert request.await_args_list[0].kwargs["json"]["ha_port"] == ha_port
 
 
 async def test_existing_service_does_not_create_duplicate(flow, monkeypatch):
