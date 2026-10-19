@@ -37,11 +37,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 MIN_HA_VERSION = "2026.6.0"
-MCP_COMMIT = "89ea666e535e91abacae04da5e1d34e6d3afa019"
+MCP_COMMIT = "da0d2f3e7dcd85927921599ed49c0b8c61aea456"
 MCP_ARCHIVE_URL = (
     "https://codeload.github.com/WOOWTECH/Woow_ha_ai_mcp/zip/" + MCP_COMMIT
 )
-MCP_ARCHIVE_SHA256 = "6fe549a5dda371d5811df83225d55c7387b2fed3abc52ce53299dcdce5edb63b"
+MCP_ARCHIVE_SHA256 = "c4b24c0f98545345264f8ed9ff6aee32805012ec593329a3aa00ea2e307e5723"
 _ARCHIVE_PREFIX = f"Woow_ha_ai_mcp-{MCP_COMMIT}/custom_components/{HA_MCP_DOMAIN}/"
 _MAX_DOWNLOAD = 32 * 1024 * 1024
 _MAX_EXTRACTED = 8 * 1024 * 1024

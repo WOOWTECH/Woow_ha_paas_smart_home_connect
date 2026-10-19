@@ -10,8 +10,17 @@
 
 ## Home Assistant 反向代理設定
 
-cloudflared 以本機 Home Assistant 為來源時，請先在 HA 的 `configuration.yaml`
-明確允許本機反向代理；`localhost` 可能使用 IPv4 或 IPv6：
+cloudflared 以本機 Home Assistant 為來源時，必須明確允許本機反向代理；`localhost` 可能使用 IPv4 或 IPv6。
+
+### HA 2026.8 以上
+
+到 **設定 → 系統 → 網路 → HTTP 伺服器**，開啟信任 `X-Forwarded-For`，在信任代理填入 `127.0.0.1/32` 與 `::1/128`。保留目前連接埠（新版 HAOS 預設為 80），儲存後 HA 會重啟。確認內外網均可連線後，在五分鐘內確認新設定，否則 HA 會自動回復。
+
+此版本已有 HTTP 設定儲存時，新增 YAML 區段不會覆蓋目前設定；請使用介面。詳見 [Home Assistant 官方 HTTP 說明](https://www.home-assistant.io/integrations/http/)。
+
+### 較舊的 HA
+
+在 `configuration.yaml` 合併下列設定：
 
 ```yaml
 http:

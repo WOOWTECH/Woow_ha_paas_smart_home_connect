@@ -1,21 +1,21 @@
 # Smart Home MCP 自動設定與 URL sensor
 
-2026-10-19；0.4.15。這份文件記錄套件行為、發布前驗證與實機部署驗收。
+2026-10-19～20；0.4.15。這份文件記錄套件行為、發布前驗證與實機部署驗收。
 
 ## 研究確認
 
 ### 套件與服務的關係
 
-使用的 woowtech repository 是 [WOOWTECH/Woow_ha_ai_mcp](https://github.com/WOOWTECH/Woow_ha_ai_mcp/tree/89ea666e535e91abacae04da5e1d34e6d3afa019)，
+使用的 woowtech repository 是 [WOOWTECH/Woow_ha_ai_mcp](https://github.com/WOOWTECH/Woow_ha_ai_mcp/tree/da0d2f3e7dcd85927921599ed49c0b8c61aea456)，
 HA domain 為 `ha_mcp_tools`，component 版本 1.2.3。
 原生設定流程有兩種 entry：`tools` 提供進階 HA 檔案功能；`server` 才會啟動 MCP 伺服器。
 只有 tools entry 不能視為 MCP server 已經運作。
-原生 server 要求 HA 2026.6.0 以上，見 [config_flow.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/config_flow.py)。
+原生 server 要求 HA 2026.6.0 以上，見 [config_flow.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/da0d2f3e7dcd85927921599ed49c0b8c61aea456/custom_components/ha_mcp_tools/config_flow.py)。
 
 MCP server 會在背景安裝 Python 依賴、建立必要的 HA 存取身分、啟動伺服器，最後註冊 webhook。
 其 config entry 會先進入 LOADED，因此 LOADED 本身不足以判定可連線。
-見 [embedded_entry.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/embedded_entry.py)
-及 [embedded_setup.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/embedded_setup.py)。
+見 [embedded_entry.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/da0d2f3e7dcd85927921599ed49c0b8c61aea456/custom_components/ha_mcp_tools/embedded_entry.py)
+及 [embedded_setup.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/da0d2f3e7dcd85927921599ed49c0b8c61aea456/custom_components/ha_mcp_tools/embedded_setup.py)。
 
 ### 舊版缺口
 
@@ -83,7 +83,7 @@ entity_id 可能仍包含 `mcp_connection_availability`，但顯示名稱與內�
 
 HTTPS 加密的是傳輸，URL 路徑本身是存取密鑰，並非「將 URL 字串加密」。
 原有 HA OAuth 設定仍然生效；擁有網址不會略過 OAuth。
-見 [MCP webhook 實作](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/mcp_webhook.py)。
+見 [MCP webhook 實作](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/da0d2f3e7dcd85927921599ed49c0b8c61aea456/custom_components/ha_mcp_tools/mcp_webhook.py)。
 
 依本次需求，完整密鑰網址會出現在 HA state，能被具有狀態讀取權限的使用者、模板及 recorder 讀取。
 若需排除歷史記錄，使用 [recorder.exclude.entities](https://www.home-assistant.io/integrations/recorder/#configure-filter)
@@ -106,9 +106,35 @@ HTTPS 加密的是傳輸，URL 路徑本身是存取密鑰，並非「將 URL �
 
 ## 0.4.15 相容性修正
 
-實際 HAOS VM（HA 2026.10.1）首次安裝發現 `voluptuous_openapi` 缺少，MCP entry 因此無法啟動。woowtech MCP component 1.2.3 已在 manifest 宣告 `voluptuous-openapi>=0.4.1`，Connect 0.4.15 固定下載該修正 commit 並更新 SHA-256。
+實際 HAOS VM（HA 2026.10.1）首次安裝發現 `voluptuous_openapi` 缺少，MCP entry 因此無法啟動。woowtech MCP component 1.2.3 已在 manifest 宣告 `voluptuous-openapi>=0.3.0`，Connect 0.4.15 固定下載該修正 commit 並更新 SHA-256。
 
-MCP 相依宣告與相關啟動邏輯的 512 項單元測試通過。VM 已完成正式 PaaS 新帳號登入、OAuth、工作區／服務自動建立與七天試用；0.4.15 冷安裝及外網驗收進行中。
+MCP 相依宣告與相關啟動邏輯的 512 項單元測試通過。最低相依版本保留 HA 2026.6 的 `voluptuous-openapi==0.3.0` 相容性；該版本已提供所需的 `convert_to_voluptuous`。HA 2026.10.1 實測自動安裝到 0.4.1。
+
+VM 已完成正式 PaaS 新帳號登入、OAuth、工作區／服務自動建立與七天試用。試用到期日為 2026-10-25，沒有下一次自動扣款日期。
+
+### 0.4.15 實機結果
+
+| 驗收 | 實體 HA 2026.7.2 | PaaS HAOS VM 2026.10.1 |
+|---|---|---|
+| Connect／MCP component | 0.4.15／1.2.3 | 0.4.15／1.2.3 |
+| MCP 安裝方式 | 更新既有套件並沿用 Server | 原始無 MCP；由 Connect 自動下載並建立 Server |
+| HTTPS 網頁及登入後 API | 通過 | 通過，HAOS 使用 port 80 |
+| MCP initialize／tools/list | HTTP 200／77 項工具 | HTTP 200／77 項工具 |
+| 唯讀 ha_get_overview | 實際 HA 查詢成功 | 實際 HA 查詢成功 |
+| 錯誤密鑰 | 無法取得 MCP 結果 | 無法取得 MCP 結果 |
+| MCP URL sensor | 保留既有 entity_id，顯示完整網址 | 新增完整網址 sensor |
+| 390 × 844 手機檢查 | 裝置頁及實體詳細視窗通過 | 外網裝置頁及實體詳細視窗通過 |
+| HA 重啟 | 沿用 Server 與密鑰 | 沿用 Server 與密鑰，無重複建立 |
+
+完整 Connect 回歸 184 項、MCP 專項 31 項通過。實體 HA 這次完整重啟，外網網頁中斷約 23 秒，Smart Home 隧道約 35 秒；這是 HA 重啟時間，不是 Odoo chart 升級的停機驗收。
+
+### 新版 HA HTTP 設定
+
+VM 首次外網請求回傳 400，原因是沒有設定可信任的本機反向代理。HA 2026.8 起 HTTP 設定改由介面管理，已有設定時新增 YAML 不會覆蓋它。實測使用官方 `http/config/configure` API，僅信任 `127.0.0.1/32` 與 `::1/128`；重啟後確認外網網頁、驗證過的 WebSocket 可用，再透過 `http/config/promote` 儲存。已移除測試時新增的舊式 YAML 設定，原有設定檔其餘內容保持一致。
+
+此 HTTP 設定是 HA 安裝前置條件，Connect 不會自動改寫管理者的 HTTP 安全設定。操作方式見 [README](../README.md#home-assistant-反向代理設定) 與 [HA 官方文件](https://www.home-assistant.io/integrations/http/)。
+
+新的 24 小時觀測涵蓋 PaaS、實體 HA 與 VM 的外網 MCP；功能驗收通過不等於 24 小時觀測已完成。觀測不呼叫付費 LLM。
 
 ## 0.4.14 正式部署驗收（2026-10-19）
 
