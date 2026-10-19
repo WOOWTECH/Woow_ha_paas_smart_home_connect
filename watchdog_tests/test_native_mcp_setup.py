@@ -22,7 +22,7 @@ def _archive(monkeypatch, extra=None):
     data = io.BytesIO()
     with zipfile.ZipFile(data, 'w') as z:
         for name, content in {
-            'manifest.json': json.dumps({'domain': 'ha_mcp_tools', 'version': '1.2.2'}),
+            'manifest.json': json.dumps({'domain': 'ha_mcp_tools', 'version': '1.2.3'}),
             '__init__.py': '', 'config_flow.py': '', **(extra or {}),
         }.items():
             z.writestr(setup._ARCHIVE_PREFIX + name, content)
@@ -57,7 +57,7 @@ def test_archive_installs_component_only(tmp_path, monkeypatch):
     payload = _archive(monkeypatch)
     target = tmp_path / 'ha_mcp_tools'
     setup._install_archive(payload, target)
-    assert json.loads((target / 'manifest.json').read_text())['version'] == '1.2.2'
+    assert json.loads((target / 'manifest.json').read_text())['version'] == '1.2.3'
     assert sorted(p.name for p in tmp_path.iterdir()) == ['ha_mcp_tools']
 
 

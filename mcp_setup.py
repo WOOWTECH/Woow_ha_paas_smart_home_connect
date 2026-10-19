@@ -37,11 +37,11 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 MIN_HA_VERSION = "2026.6.0"
-MCP_COMMIT = "c7b8d79fea7228007d7af9291f3a03afc4d3e071"
+MCP_COMMIT = "89ea666e535e91abacae04da5e1d34e6d3afa019"
 MCP_ARCHIVE_URL = (
     "https://codeload.github.com/WOOWTECH/Woow_ha_ai_mcp/zip/" + MCP_COMMIT
 )
-MCP_ARCHIVE_SHA256 = "c162461ae8cad95a696212328a340838533bd8b59fa7326948f810cdd00bd4de"
+MCP_ARCHIVE_SHA256 = "6fe549a5dda371d5811df83225d55c7387b2fed3abc52ce53299dcdce5edb63b"
 _ARCHIVE_PREFIX = f"Woow_ha_ai_mcp-{MCP_COMMIT}/custom_components/{HA_MCP_DOMAIN}/"
 _MAX_DOWNLOAD = 32 * 1024 * 1024
 _MAX_EXTRACTED = 8 * 1024 * 1024
@@ -92,7 +92,7 @@ def _install_archive(payload: bytes, component_dir: Path) -> None:
         manifest = json.loads((staged / "manifest.json").read_text())
         if (
             manifest.get("domain") != HA_MCP_DOMAIN
-            or manifest.get("version") != "1.2.2"
+            or manifest.get("version") != "1.2.3"
             or not (staged / "config_flow.py").is_file()
             or not (staged / "__init__.py").is_file()
         ):

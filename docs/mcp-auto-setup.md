@@ -1,21 +1,21 @@
 # Smart Home MCP 自動設定與 URL sensor
 
-2026-10-19；0.4.14。這份文件記錄套件行為、發布前驗證與實機部署驗收。
+2026-10-19；0.4.15。這份文件記錄套件行為、發布前驗證與實機部署驗收。
 
 ## 研究確認
 
 ### 套件與服務的關係
 
-使用的 woowtech repository 是 [WOOWTECH/Woow_ha_ai_mcp](https://github.com/WOOWTECH/Woow_ha_ai_mcp/tree/c7b8d79fea7228007d7af9291f3a03afc4d3e071)，
-HA domain 為 `ha_mcp_tools`，component 版本 1.2.2。
+使用的 woowtech repository 是 [WOOWTECH/Woow_ha_ai_mcp](https://github.com/WOOWTECH/Woow_ha_ai_mcp/tree/89ea666e535e91abacae04da5e1d34e6d3afa019)，
+HA domain 為 `ha_mcp_tools`，component 版本 1.2.3。
 原生設定流程有兩種 entry：`tools` 提供進階 HA 檔案功能；`server` 才會啟動 MCP 伺服器。
 只有 tools entry 不能視為 MCP server 已經運作。
-原生 server 要求 HA 2026.6.0 以上，見 [config_flow.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/c7b8d79fea7228007d7af9291f3a03afc4d3e071/custom_components/ha_mcp_tools/config_flow.py)。
+原生 server 要求 HA 2026.6.0 以上，見 [config_flow.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/config_flow.py)。
 
 MCP server 會在背景安裝 Python 依賴、建立必要的 HA 存取身分、啟動伺服器，最後註冊 webhook。
 其 config entry 會先進入 LOADED，因此 LOADED 本身不足以判定可連線。
-見 [embedded_entry.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/c7b8d79fea7228007d7af9291f3a03afc4d3e071/custom_components/ha_mcp_tools/embedded_entry.py)
-及 [embedded_setup.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/c7b8d79fea7228007d7af9291f3a03afc4d3e071/custom_components/ha_mcp_tools/embedded_setup.py)。
+見 [embedded_entry.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/embedded_entry.py)
+及 [embedded_setup.py](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/embedded_setup.py)。
 
 ### 舊版缺口
 
@@ -83,7 +83,7 @@ entity_id 可能仍包含 `mcp_connection_availability`，但顯示名稱與內�
 
 HTTPS 加密的是傳輸，URL 路徑本身是存取密鑰，並非「將 URL 字串加密」。
 原有 HA OAuth 設定仍然生效；擁有網址不會略過 OAuth。
-見 [MCP webhook 實作](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/c7b8d79fea7228007d7af9291f3a03afc4d3e071/custom_components/ha_mcp_tools/mcp_webhook.py)。
+見 [MCP webhook 實作](https://github.com/WOOWTECH/Woow_ha_ai_mcp/blob/89ea666e535e91abacae04da5e1d34e6d3afa019/custom_components/ha_mcp_tools/mcp_webhook.py)。
 
 依本次需求，完整密鑰網址會出現在 HA state，能被具有狀態讀取權限的使用者、模板及 recorder 讀取。
 若需排除歷史記錄，使用 [recorder.exclude.entities](https://www.home-assistant.io/integrations/recorder/#configure-filter)
@@ -99,12 +99,18 @@ HTTPS 加密的是傳輸，URL 路徑本身是存取密鑰，並非「將 URL �
 - **完整 HA 套件回歸：184 項通過。**在既有 HA 2026.2.3 fixture 環境執行；MCP 版本檢查另有測試。這不代表 2026.2.3 可運行嵌入式 MCP。
 - **MCP 專項：31 項通過。**在 HA 2026.7.2／Python 3.14 執行，命令為 `python3 scripts/test_mcp.py`。
 
-安裝來源固定的是 component 1.2.2。MCP server 採原生穩定版依賴解析與更新機制，本次實際安裝的是 `ha-mcp` 8.7.0。
+安裝來源固定的是 component 1.2.3。MCP server 採原生穩定版依賴解析與更新機制，本次實際安裝的是 `ha-mcp` 8.7.0。
 因此沒有宣稱整個依賴樹都已鎖定版本。
 
 上述為發布前驗證基線；正式 PaaS 不需要配合這次 HA 套件更新修改。
 
-## 正式部署驗收（2026-10-19）
+## 0.4.15 相容性修正
+
+實際 HAOS VM（HA 2026.10.1）首次安裝發現 `voluptuous_openapi` 缺少，MCP entry 因此無法啟動。woowtech MCP component 1.2.3 已在 manifest 宣告 `voluptuous-openapi>=0.4.1`，Connect 0.4.15 固定下載該修正 commit 並更新 SHA-256。
+
+MCP 相依宣告與相關啟動邏輯的 512 項單元測試通過。VM 已完成正式 PaaS 新帳號登入、OAuth、工作區／服務自動建立與七天試用；0.4.15 冷安裝及外網驗收進行中。
+
+## 0.4.14 正式部署驗收（2026-10-19）
 
 - GitHub `main` 已發布 0.4.14 的實作，程式提交為 `51f5e008a0e3262130bf67989abed0ce71a4f5a4`。
 - 實體 HA 2026.7.2 已由 0.4.12 更新到 0.4.14，重新啟動後 Smart Home 與原生 MCP entry 均載入成功。
@@ -113,7 +119,7 @@ HTTPS 加密的是傳輸，URL 路徑本身是存取密鑰，並非「將 URL �
 - 從對外 HTTPS 網址實際完成 initialize、tools/list（77 項）、唯讀 `ha_get_overview`；錯誤密鑰無法取得 MCP 結果。
 - 390 × 844 手機尺寸的 HA 裝置頁與實體詳細視窗已檢查。HA 可能在長網址中插入排版用的零寬字元；API state 保留原始網址。驗收截圖遮蔽密鑰。
 - PaaS 專用 HAOS VM（HA 2026.10.1）已安裝相同版本並重啟，159 個來源檔案核對一致、12 個執行期 Python 檔案編譯及套件匯入成功；當時沒有既有 MCP 套件。
-- **VM 的首次登入、選擇含 MCP 服務、自動安裝及新隧道外網驗收尚未完成，待取得該 VM 的測試登入資料。**不將前面的容器冷安裝結果算作這台 VM 的完整驗收。
+- 當時 VM 的首次登入驗收尚未完成；後續取得測試登入資料並完成 OAuth 與試用建立，冷安裝發現的相容性問題見上方 0.4.15 段落。
 - 更新後已另開 24 小時觀測，涵蓋 PaaS、實體 HA 對外網頁、MCP URL sensor 與外網 MCP 工具清單；觀測完成前不標記為 24 小時通過。
 
 手動部署時，暫存套件與回復用備份必須放在 `custom_components` 目錄以外；HA 也可能掃描其中的隱藏目錄，重複的 manifest 會干擾載入。
