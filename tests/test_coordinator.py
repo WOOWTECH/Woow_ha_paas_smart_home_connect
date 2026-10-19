@@ -387,6 +387,8 @@ def _attach_fake_platform(sensor: TunnelStatusSensor) -> None:
         domain="sensor",
         default_language_platform_translations={},
     )
+    # HA 2026.2+ reads platform_data for unit translation before enum validation.
+    sensor.platform_data = sensor.platform
     sensor.entity_id = "sensor.woow_tunnel_status"
 
 

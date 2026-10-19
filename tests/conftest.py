@@ -1,8 +1,8 @@
 """Test wiring for the woow_paas_smart_home component repo.
 
-Makes the package importable in isolation AND pulls in Home Assistant's
-native test fixtures (``hass`` etc.) from the in-tree ``tests/conftest.py``
-without requiring pytest-homeassistant-custom-component.
+Makes the package importable in isolation. Uses the installed
+pytest-homeassistant-custom-component fixtures when available, otherwise
+Home Assistant's in-tree ``tests/conftest.py`` fixtures.
 """
 import sys
 from pathlib import Path
@@ -15,4 +15,9 @@ if str(_CONFIG_DIR) not in sys.path:
 
 # Register HA core's conftest as a plugin so its fixtures (hass,
 # enable_custom_integrations, ...) are available to tests living here.
-pytest_plugins = ["tests.conftest"]
+try:
+    import pytest_homeassistant_custom_component  # noqa: F401
+except ImportError:
+    pytest_plugins = ["tests.conftest"]
+else:
+    pytest_plugins = ["pytest_homeassistant_custom_component"]

@@ -6,7 +6,7 @@
       },
       "select_workspace": {
         "title": "選擇工作區",
-        "description": "選擇 Smart Home 或安全存取所在的工作區。",
+        "description": "選擇要使用的工作區。若裡面沒有所選類型的服務，會自動建立七天試用服務。",
         "data": {
           "workspace": "工作區"
         }
@@ -19,10 +19,10 @@
         }
       },
       "select_home": {
-        "title": "選擇 Smart Home",
-        "description": "選擇要和這台 Home Assistant 連線的 Smart Home。",
+        "title": "選擇連線服務",
+        "description": "這裡只列出前面選定的服務類型。請選擇要連結這台 Home Assistant 的服務。",
         "data": {
-          "home": "Smart Home"
+          "home": "連線服務"
         }
       },
       "select_access": {
@@ -34,24 +34,32 @@
       },
       "reauth_confirm": {
         "title": "重新授權",
-        "description": "Woow PaaS 的授權已過期或缺少必要權限。按「傳送」重新授權。"
+        "description": "woowtech 的授權已過期或缺少必要權限。按「傳送」重新授權。"
+      },
+      "user": {
+        "title": "選擇連線服務",
+        "description": "遠端存取：從外部連回 Home Assistant。遠端存取＋MCP：加上 AI 工具連線。登入後，若沒有工作區或所選服務，將自動建立並開始七天免費試用；到期暫停，不會自動收費。",
+        "data": {
+          "service_kind": "服務類型"
+        }
       }
     },
     "progress": {
-      "wait_for_device": "在瀏覽器開啟 {url}，輸入代碼 {code}。授權完成後會自動繼續設定。"
+      "wait_for_device": "在瀏覽器開啟 {url}，輸入代碼 {code}。授權完成後會自動繼續設定。",
+      "prepare_service": "正在準備工作區與連線服務，通常需要幾分鐘。請保留此畫面；重試會沿用已建立的服務。"
     },
     "create_entry": {
-      "default": "已連線到 {name}"
+      "default": "已完成 {name} 的連結設定。請確認整合與遠端連線狀態。"
     },
     "error": {
-      "cannot_connect": "無法連線到 Woow PaaS 平台，請稍後再試。",
+      "cannot_connect": "無法連線到 woowtech 平台，請稍後再試。",
       "invalid_auth": "驗證失敗，請重新授權。",
       "unknown": "發生未預期的錯誤。",
       "insufficient_role": "只有這個工作區的擁有者或管理員可以連線。請他們來設定這台 Home Assistant。"
     },
     "abort": {
       "already_configured": "這個產品已經設定過了。",
-      "already_bound": "這個智慧家庭已經綁在另一台 Home Assistant（{bound_to}，自 {bound_at}）。兩台不能共用同一條通道：對外網址會連到先回應的那一台，大約一半的請求會落到錯的機器上。請先在 WOOW PaaS 後台解除綁定，或改選屬於這台機器的智慧家庭。",
+      "already_bound": "這個智慧家庭已經綁在另一台 Home Assistant（{bound_to}，自 {bound_at}）。兩台不能共用同一條通道：對外網址會連到先回應的那一台，大約一半的請求會落到錯的機器上。請先在 woowtech 後台解除綁定，或改選屬於這台機器的智慧家庭。",
       "no_workspaces": "你的帳號沒有任何工作區，請先建立工作區。",
       "no_homes": "選擇的工作區裡沒有 Smart Home。",
       "no_accesses": "選擇的工作區裡沒有安全存取。",
@@ -68,10 +76,12 @@
       "missing_credentials": "這個整合需要應用程式憑證。",
       "oauth_implementation_unavailable": "目前沒有可用的 OAuth2 驗證方式。",
       "already_in_progress": "這個產品正在設定中。",
-      "cannot_connect": "無法連線到 Woow PaaS 平台，請稍後再試。",
+      "cannot_connect": "無法連線到 woowtech 平台，請稍後再試。",
       "invalid_auth": "驗證失敗，請重新授權。",
       "unknown": "發生未預期的錯誤。",
-      "insufficient_role": "只有這個工作區的擁有者或管理員可以連線。請他們來設定這台 Home Assistant。"
+      "insufficient_role": "只有這個工作區的擁有者或管理員可以連線。請他們來設定這台 Home Assistant。",
+      "onboarding_failed": "服務尚未完成開通。請稍後重新加入整合；已建立的工作區與服務會保留。也可到 [woowtech](https://aiot.woowtech.io/woow) 查看狀態。",
+      "trial_expired": "七天試用已結束，服務已暫停。請到 [woowtech](https://aiot.woowtech.io/woow) 選擇付費方案後繼續使用，不會重新開啟試用。"
     }
   },
   "entity": {
@@ -108,8 +118,8 @@
   },
   "issues": {
     "instance_deleted": {
-      "title": "{name} 已在 Woow PaaS 平台上刪除",
-      "description": "「{name}」已在 Woow PaaS 平台上刪除，隧道已停止、相關感測器變為無法使用。請到「設定 → 裝置與服務 → Woow PaaS Smart Home」移除這個整合項目。若是誤刪，平台恢復後這則通知會自動消失。"
+      "title": "{name} 已在 woowtech 平台上刪除",
+      "description": "「{name}」已在 woowtech 平台上刪除，隧道已停止、相關感測器變為無法使用。請到「設定 → 裝置與服務 → woowtech Smart Home」移除這個整合項目。若是誤刪，平台恢復後這則通知會自動消失。"
     }
   }
 }

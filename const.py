@@ -84,6 +84,14 @@ OAUTH2_SCOPES = (
     "smarthome:read smarthome:tunnel workspace:read "
     "security-access:read security-access:tunnel"
 )
+OAUTH2_ONBOARDING_SCOPES = (
+    'workspace:read smarthome:read smarthome:tunnel smarthome:provision'
+)
+SERVICE_REMOTE_ACCESS = 'remote_access'
+SERVICE_REMOTE_ACCESS_MCP = 'remote_access_mcp'
+CONF_SERVICE_KIND = 'service_kind'
+API_PATH_ONBOARDING = '/api/smarthome/onboarding'
+API_PATH_ONBOARDING_OPTIONS = '/api/smarthome/onboarding/options'
 
 # --- Product types ---
 # A single config entry represents one product instance (one smart home OR one
