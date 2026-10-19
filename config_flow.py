@@ -33,8 +33,9 @@ from .const import (
     API_PATH_HOME_TUNNEL_TOKEN,
     API_PATH_SA_ACCESS_TUNNEL_TOKEN,
     API_PATH_SA_WORKSPACE_ACCESSES,
-    API_PATH_WORKSPACE_HOMES,
-    API_PATH_WORKSPACES,
+    API_PATH_ONBOARDING,
+    API_PATH_ONBOARDING_OPTIONS,
+    CONF_SERVICE_KIND,
     CONF_HOME_ID,
     CONF_HOME_NAME,
     CONF_INSTANCE_LABEL,
@@ -52,15 +53,16 @@ from .const import (
     ERR_INSUFFICIENT_ROLE,
     ERR_INVALID_AUTH,
     ERR_NO_ACCESSES,
-    ERR_NO_HOMES,
-    ERR_NO_WORKSPACES,
     ERR_UNKNOWN,
     OAUTH2_CLIENT_ID,
     OAUTH2_DEVICE_AUTHORIZATION,
     OAUTH2_SCOPES,
+    OAUTH2_ONBOARDING_SCOPES,
     OAUTH2_TOKEN,
     PRODUCT_SECURITY_ACCESS,
     PRODUCT_SMART_HOME,
+    SERVICE_REMOTE_ACCESS,
+    SERVICE_REMOTE_ACCESS_MCP,
 )
 from .instance_identity import async_instance_identity
 from .oauth2 import create_implementation
@@ -104,6 +106,9 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self._accesses: list[dict[str, Any]] = []
         self._selected_workspace_id: int | None = None
         self._selected_workspace_name: str | None = None
+        self._service_kind: str | None = None
+        self._onboarding_task: asyncio.Task[None] | None = None
+        self._onboarding_home: dict[str, Any] | None = None
         # Device flow (RFC 8628) state — used for HA Companion App onboarding.
         self._device_flow: dict[str, Any] | None = None
         self._device_token: dict[str, Any] | None = None
@@ -114,6 +119,20 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
     def logger(self) -> logging.Logger:
         """Return logger."""
         return _LOGGER
+
+    @property
+    def _requested_scopes(self) -> str:
+        # Preserve Security Access reauth. Each new Smart Home flow requests
+        # only its own read, tunnel and trial-provision permissions.
+        return OAUTH2_SCOPES if self.source == SOURCE_REAUTH else OAUTH2_ONBOARDING_SCOPES
+
+    @property
+    def extra_authorize_data(self) -> dict:
+        # Flow-local parameters; never mutate the shared OAuth implementation.
+        data = {'scope': self._requested_scopes, 'ui_locales': 'zh-TW'}
+        if self._service_kind:
+            data['service_kind'] = self._service_kind
+        return data
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -131,6 +150,20 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
                 self.hass, self.DOMAIN, create_implementation(self.hass)
             )
         async_register_woow_callback_view(self.hass)
+        if self.source != SOURCE_REAUTH and self._service_kind is None:
+            if user_input is None:
+                return self.async_show_form(
+                    step_id='user',
+                    data_schema=vol.Schema({vol.Required(CONF_SERVICE_KIND): vol.In({
+                        SERVICE_REMOTE_ACCESS: '遠端存取',
+                        SERVICE_REMOTE_ACCESS_MCP: '遠端存取＋MCP',
+                    })}),
+                )
+            kind = user_input.get(CONF_SERVICE_KIND)
+            if kind not in (SERVICE_REMOTE_ACCESS, SERVICE_REMOTE_ACCESS_MCP):
+                return self.async_abort(reason=ERR_UNKNOWN)
+            self._service_kind = kind
+            user_input = None
         # The redirect/window.open web flow can't complete inside the HA
         # Companion App (HA-wide limitation; design §11). Route the app to the
         # device flow (RFC 8628); browsers keep the web flow + branded callback.
@@ -165,7 +198,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Handle OAuth2 completion.
 
-        Normal flow: continue to workspace -> product -> instance selection.
+        Normal flow: continue to workspace -> matching service -> setup.
         Reauth flow: only the token changed, so update the existing entry's data
         in place (preserving workspace/instance/tunnel keys) and reload.
         """
@@ -247,7 +280,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         session = async_get_clientsession(self.hass)
         resp = await session.post(
             f"{API_BASE_URL}{OAUTH2_DEVICE_AUTHORIZATION}",
-            data={"client_id": OAUTH2_CLIENT_ID, "scope": OAUTH2_SCOPES},
+            data={"client_id": OAUTH2_CLIENT_ID, "scope": self._requested_scopes},
         )
         if resp.status != HTTPStatus.OK:
             raise ApiError(resp.status, "device_authorization_failed")
@@ -302,15 +335,15 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         raise ApiError(HTTPStatus.REQUEST_TIMEOUT, "expired_token")
 
-    async def _async_api_request(self, method: str, path: str) -> Any:
+    async def _async_api_request(self, method: str, path: str, **kwargs: Any) -> Any:
         """Make an authenticated API request using the OAuth2 token."""
         url = f"{API_BASE_URL}{path}"
         _LOGGER.debug("API request: %s %s", method, url)
         resp = await async_oauth2_request(
-            self.hass, self._oauth_data["token"], method, url
+            self.hass, self._oauth_data["token"], method, url, **kwargs
         )
         _LOGGER.debug("API response: %s %s -> HTTP %s", method, url, resp.status)
-        if resp.status == HTTPStatus.OK:
+        if resp.status in (HTTPStatus.OK, HTTPStatus.ACCEPTED):
             return await resp.json()
 
         # Extract error detail from response body
@@ -338,18 +371,24 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
 
         if user_input is not None and "workspace" in user_input:
             selected = user_input["workspace"]
+            self._selected_workspace_id = None
+            self._selected_workspace_name = None
+            self._onboarding_home = None
             _LOGGER.debug("User selected workspace: %s", selected)
             for ws in self._workspaces:
                 if str(ws["id"]) == selected:
                     self._selected_workspace_id = ws["id"]
                     self._selected_workspace_name = ws["name"]
                     break
-            return await self.async_step_select_product()
+            if self._selected_workspace_id is None:
+                return self.async_abort(reason=ERR_INSUFFICIENT_ROLE)
+            return await self.async_step_select_home()
 
         # Fetch workspaces from API
         _LOGGER.debug("Fetching workspaces from API")
         try:
-            data = await self._async_api_request("GET", API_PATH_WORKSPACES)
+            query = urlencode({'service_kind': self._service_kind})
+            data = await self._async_api_request('GET', f'{API_PATH_ONBOARDING_OPTIONS}?{query}')
             self._workspaces = data["workspaces"]
             _LOGGER.debug("Fetched %d workspace(s)", len(self._workspaces))
         except AuthenticationError:
@@ -366,10 +405,17 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             return self.async_abort(reason=errors["base"])
 
         if not self._workspaces:
-            return self.async_abort(reason=ERR_NO_WORKSPACES)
+            if data.get('has_memberships'):
+                return self.async_abort(reason=ERR_INSUFFICIENT_ROLE)
+            return await self.async_step_onboarding()
 
-        # Always show the list so the user explicitly confirms which workspace
-        # to use, even when only one exists.
+        if len(self._workspaces) == 1:
+            ws = self._workspaces[0]
+            self._selected_workspace_id = ws['id']
+            self._selected_workspace_name = ws['name']
+            return await self.async_step_select_home()
+
+        # Multiple workspaces require an explicit choice.
         workspace_options = {
             str(ws["id"]): ws["name"] for ws in self._workspaces
         }
@@ -418,21 +464,19 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             _LOGGER.debug("User selected home: %s", selected)
             for home in self._homes:
                 if str(home["id"]) == selected:
-                    return await self._async_create_entry(
-                        product_type=PRODUCT_SMART_HOME,
-                        instance_id=home["id"],
-                        instance_name=home["name"],
-                    )
+                    self._onboarding_home = home
+                    return await self.async_step_onboarding()
             errors["base"] = ERR_CANNOT_CONNECT
 
         if not errors:
+            self._onboarding_home = None
             _LOGGER.debug(
                 "Fetching homes for workspace_id=%s", self._selected_workspace_id
             )
             try:
-                path = API_PATH_WORKSPACE_HOMES.format(
-                    workspace_id=self._selected_workspace_id
-                )
+                query = urlencode({'service_kind': self._service_kind,
+                                   'workspace_id': self._selected_workspace_id})
+                path = f'{API_PATH_ONBOARDING_OPTIONS}?{query}'
                 data = await self._async_api_request("GET", path)
                 self._homes = data["homes"]
                 _LOGGER.debug("Fetched %d home(s)", len(self._homes))
@@ -450,12 +494,17 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             return self.async_abort(reason=errors["base"])
 
         if not self._homes:
-            return self.async_abort(reason=ERR_NO_HOMES)
+            return await self.async_step_onboarding()
 
-        # Always show the list so the user explicitly picks which smart home to
-        # create an entry for, even when only one exists.
+        if len(self._homes) == 1:
+            self._onboarding_home = self._homes[0]
+            return await self.async_step_onboarding()
+
+        # Multiple matching services require an explicit choice.
         home_options = {
-            str(home["id"]): home["name"] for home in self._homes
+            str(home['id']): home['name'] + (
+                f"（已連結：{home['bound_instance_label']}）"
+                if home.get('bound_instance_label') else '') for home in self._homes
         }
         return self.async_show_form(
             step_id="select_home",
@@ -464,6 +513,72 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def async_step_onboarding(self, user_input=None) -> ConfigFlowResult:
+        """Create missing records and wait for setup without blocking the UI."""
+        if self._onboarding_task is None:
+            self._onboarding_task = self.hass.async_create_task(self._async_onboard())
+        if self._onboarding_task.done():
+            try:
+                self._onboarding_task.result()
+            except InsufficientRoleError:
+                return self.async_abort(reason=ERR_INSUFFICIENT_ROLE)
+            except AuthenticationError:
+                return self.async_abort(reason=ERR_INVALID_AUTH)
+            except (ApiError, aiohttp.ClientError, TimeoutError):
+                return self.async_abort(reason='onboarding_failed')
+            except (KeyError, TypeError, ValueError):
+                _LOGGER.exception('Invalid onboarding response')
+                return self.async_abort(reason=ERR_UNKNOWN)
+            return self.async_show_progress_done(next_step_id='onboarding_finish')
+        return self.async_show_progress(
+            step_id='onboarding', progress_action='prepare_service',
+            progress_task=self._onboarding_task,
+        )
+
+    async def _async_onboard(self) -> None:
+        if self._onboarding_home is None:
+            result = await self._async_api_request('POST', API_PATH_ONBOARDING, json={
+                'service_kind': self._service_kind,
+                'workspace_id': self._selected_workspace_id,
+            })
+            workspace = result['workspace']
+            self._selected_workspace_id = workspace['id']
+            self._selected_workspace_name = workspace['name']
+            self._homes = result['homes']
+            # A concurrent request may have created several choices. Let the
+            # user choose; never claim an arbitrary existing service.
+            if len(self._homes) != 1:
+                return
+            self._onboarding_home = self._homes[0]
+        home = self._onboarding_home
+        if (home.get('subscription') or {}).get('trial_expired'):
+            return  # The next step explains paid activation without reconnecting.
+        await self._async_api_request(
+            'POST', f"{API_PATH_ONBOARDING}/homes/{home['id']}/prepare")
+        async with asyncio.timeout(300):
+            while True:
+                result = await self._async_api_request('GET', f"/api/smarthome/homes/{home['id']}")
+                ready = result['home']
+                if ready['state'] == 'active':
+                    self._onboarding_home = ready
+                    return
+                if ready['state'] in ('suspended', 'deleting'):
+                    raise ApiError(409, 'service_unavailable')
+                if ready['state'] == 'error' and not ready.get('setup_requested'):
+                    raise ApiError(409, 'setup_failed')
+                await asyncio.sleep(2)
+
+    async def async_step_onboarding_finish(self, user_input=None) -> ConfigFlowResult:
+        self._onboarding_task = None
+        if self._onboarding_home is None:
+            return await self.async_step_select_home()
+        home = self._onboarding_home
+        if (home.get('subscription') or {}).get('trial_expired'):
+            return self.async_abort(reason='trial_expired')
+        return await self._async_create_entry(
+            product_type=PRODUCT_SMART_HOME,
+            instance_id=home['id'], instance_name=home['name'])
 
     async def async_step_select_access(
         self, user_input: dict[str, Any] | None = None
@@ -563,6 +678,8 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             else:
                 path = API_PATH_HOME_TUNNEL_TOKEN.format(home_id=instance_id)
             tunnel_data = await self._async_api_request("GET", f"{path}?{identity}")
+            if not tunnel_data.get('tunnel_token') or not tunnel_data.get('tunnel_id'):
+                raise ApiError(503, 'tunnel_not_ready')
             _LOGGER.debug(
                 "Tunnel token fetched; tunnel_id=%s, subdomain=%s",
                 tunnel_data.get("tunnel_id"),
@@ -623,6 +740,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         # derived live from the access routes by the coordinator.
         if not is_sa:
             data[CONF_SUBDOMAIN] = tunnel_data["subdomain"]
+            data[CONF_SERVICE_KIND] = self._service_kind or SERVICE_REMOTE_ACCESS
 
         # strings.json 的 create_entry.default 是 "Successfully connected to {name}"；
         # 不帶 placeholder 時 HA 前端的 formatjs 會把成功訊息換成 MISSING_VALUE 錯誤。

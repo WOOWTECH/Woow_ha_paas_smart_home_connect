@@ -31,7 +31,7 @@ def _request(hass: HomeAssistant, query: dict) -> MagicMock:
 
 
 def _spy_flow(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    spy = AsyncMock()
+    spy = AsyncMock(return_value={"type": "form", "step_id": "select_workspace"})
     monkeypatch.setattr(hass.config_entries.flow, "async_configure", spy)
     return spy
 
@@ -54,7 +54,8 @@ async def test_success_resumes_flow_and_renders_success_page(
         "state": {"flow_id": "flow-1", "redirect_uri": "https://ha/x"},
         "code": "the-code",
     }
-    assert "已成功連結 Home Assistant" in resp.text
+    assert "已收到授權回應" in resp.text
+    assert "已成功連結 Home Assistant" not in resp.text
     assert "window.close" in resp.text
 
 
@@ -115,21 +116,17 @@ async def test_register_view_is_idempotent(hass: HomeAssistant) -> None:
     assert hass.data.get(DATA_CALLBACK_VIEW_REGISTERED) is True
 
 
-def test_rendered_page_carries_direction_a_design_tokens() -> None:
-    """Regression-lock 方向 A 視覺指紋（色彩/SVG/keyframe/行為標記）。"""
+def test_rendered_page_matches_woowtech_brand_and_truthful_status() -> None:
+    """官網色彩、MDI 與完成設定前的正確授權狀態。"""
     from custom_components.woow_paas_smart_home.oauth_callback_view import _render_page
 
     success = _render_page("success")
     error = _render_page("error")
 
-    # header 漸層 + pulseDot keyframe
-    assert "linear-gradient(135deg, #5b73ff 0%, #3d5af1 60%, #2e45d6 100%)" in success
-    assert "@keyframes pulseDot" in success
-    # 主按鈕色 + cube/home SVG path 指紋
-    assert "#3d5af1" in success
-    assert "M3 10.5 12 3l9 7.5" in success  # home icon
-    # 行為標記：localStorage key、整合頁導回、倒數
-    assert "woow_ha_url" in success
+    assert "#6183fc" in success and "#eff1f5" in success
+    assert "mdi-home-assistant" in success
+    assert ">woowtech</div>" in success
+    assert "繼續選擇工作區與服務" in success
     assert "/config/integrations/dashboard" in success
     # 狀態文案分流
     assert "正在返回整合頁面" in success and "立即返回整合頁" in success
@@ -154,14 +151,12 @@ def test_render_page_auto_return_mode_toggle() -> None:
     assert "var WOOW_LINGER=5;" in longer
 
 
-def test_edit_pauses_countdown_machinery_present() -> None:
-    """編輯網址時暫停倒數（避免自動返回打斷編輯）的機制有被渲染。"""
+def test_return_is_bound_to_current_ha_origin() -> None:
+    """舊瀏覽器儲存的網址不會把授權結果導到另一台 HA。"""
     from custom_components.woow_paas_smart_home.oauth_callback_view import _render_page
 
     success = _render_page("success")
-    # 倒數控制函式 + 編輯時的暫停提示
-    assert "startCountdown" in success and "stopCountdown" in success
-    assert "自動返回已暫停" in success
-    # 編輯鈕暫停、存檔/取消重新開始
-    assert "click',function(){stopCountdown();" in success
-    assert "viewRow.style.display='flex';startCountdown();" in success
+    assert "var haUrl=location.origin;" in success
+    assert "location.replace(haUrl+'/config/integrations/dashboard')" in success
+    assert "localStorage" not in success and "woow_ha_url" not in success
+    assert "<input" not in success

@@ -6,7 +6,7 @@
       },
       "select_workspace": {
         "title": "Select Workspace",
-        "description": "Choose the workspace that contains your smart home or security access.",
+        "description": "Choose a workspace. If it has no service of the selected type, a seven-day trial will be created.",
         "data": {
           "workspace": "Workspace"
         }
@@ -19,10 +19,10 @@
         }
       },
       "select_home": {
-        "title": "Select Smart Home",
-        "description": "Choose the smart home to connect with this Home Assistant instance.",
+        "title": "Choose a connection service",
+        "description": "Only services of your selected type are shown. Choose the one to connect to this Home Assistant.",
         "data": {
-          "home": "Smart Home"
+          "home": "Connection service"
         }
       },
       "select_access": {
@@ -34,24 +34,32 @@
       },
       "reauth_confirm": {
         "title": "Re-authenticate",
-        "description": "Your Woow PaaS authorization has expired or is missing required permissions. Select Submit to re-authorize."
+        "description": "Your woowtech authorization has expired or is missing required permissions. Select Submit to re-authorize."
+      },
+      "user": {
+        "title": "Choose a connection service",
+        "description": "Remote access connects you to Home Assistant from anywhere. Remote access + MCP also connects AI tools. After sign-in, missing workspaces and services are created with a seven-day trial. The trial pauses at expiry; paid use requires your choice.",
+        "data": {
+          "service_kind": "Service type"
+        }
       }
     },
     "progress": {
-      "wait_for_device": "Open {url} in a browser and enter the code {code}. Setup continues automatically once you authorize."
+      "wait_for_device": "Open {url} in a browser and enter the code {code}. Setup continues automatically once you authorize.",
+      "prepare_service": "Preparing your workspace and connection service. This may take a few minutes. Keep this screen open; retries reuse the same service."
     },
     "create_entry": {
-      "default": "Successfully connected to {name}"
+      "default": "Connection setup for {name} is saved. Check the integration and remote connection status."
     },
     "error": {
-      "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
+      "cannot_connect": "Failed to connect to woowtech platform. Please try again later.",
       "invalid_auth": "Invalid authentication. Please re-authorize.",
       "unknown": "An unexpected error occurred.",
       "insufficient_role": "Only owners and admins of this workspace can connect it. Ask one of them to set up this Home Assistant."
     },
     "abort": {
       "already_configured": "This product instance is already configured.",
-      "already_bound": "This smart home is already connected to another Home Assistant installation ({bound_to}, since {bound_at}). Two installations must not share one tunnel: the public address would reach whichever answers first, so about half of all requests would land on the wrong machine. Release the binding in the WOOW PaaS portal, or pick the smart home that belongs to this machine.",
+      "already_bound": "This smart home is already connected to another Home Assistant installation ({bound_to}, since {bound_at}). Two installations must not share one tunnel: the public address would reach whichever answers first, so about half of all requests would land on the wrong machine. Release the binding in the woowtech portal, or pick the smart home that belongs to this machine.",
       "no_workspaces": "No workspaces found for your account. Please create a workspace first.",
       "no_homes": "No smart homes found in the selected workspace.",
       "no_accesses": "No security accesses found in the selected workspace.",
@@ -68,10 +76,12 @@
       "missing_credentials": "The integration requires application credentials.",
       "oauth_implementation_unavailable": "No OAuth2 implementations are currently available.",
       "already_in_progress": "Setup for this product instance is already in progress.",
-      "cannot_connect": "Failed to connect to Woow PaaS platform. Please try again later.",
+      "cannot_connect": "Failed to connect to woowtech platform. Please try again later.",
       "invalid_auth": "Invalid authentication. Please re-authorize.",
       "unknown": "An unexpected error occurred.",
-      "insufficient_role": "Only owners and admins of this workspace can connect it. Ask one of them to set up this Home Assistant."
+      "insufficient_role": "Only owners and admins of this workspace can connect it. Ask one of them to set up this Home Assistant.",
+      "onboarding_failed": "Setup has not finished. Try adding the integration again shortly; existing records are kept. Check the service in [woowtech](https://aiot.woowtech.io/woow).",
+      "trial_expired": "The seven-day trial has ended. Choose a paid plan in [woowtech](https://aiot.woowtech.io/woow) to continue. Reconnecting does not restart the trial."
     }
   },
   "entity": {
@@ -108,8 +118,8 @@
   },
   "issues": {
     "instance_deleted": {
-      "title": "{name} was deleted on Woow PaaS",
-      "description": "\"{name}\" no longer exists on the Woow PaaS platform, so its tunnel has been stopped and its sensors are unavailable. Remove this integration entry under Settings → Devices & services → Woow PaaS Smart Home. If the deletion was a mistake, this notice clears by itself once the platform reports the instance again."
+      "title": "{name} was deleted on woowtech",
+      "description": "\"{name}\" no longer exists on the woowtech platform, so its tunnel has been stopped and its sensors are unavailable. Remove this integration entry under Settings → Devices & services → woowtech Smart Home. If the deletion was a mistake, this notice clears by itself once the platform reports the instance again."
     }
   }
 }

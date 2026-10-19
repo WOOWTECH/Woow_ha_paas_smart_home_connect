@@ -1,9 +1,8 @@
-"""WOOW-branded OAuth2 callback view (replaces my.home-assistant.io relay).
+"""woowtech OAuth2 callback view (replaces my.home-assistant.io relay).
 
 Lands the OAuth redirect directly on the local HA instance and renders the
-"方向 A — 忠於原版" branded page, then resumes the config flow exactly like HA
-Core's OAuth2AuthorizeCallbackView — reusing _decode_jwt + async_configure.
-Only the rendered page is new; the token never leaves the local instance.
+woowtech page, then resumes the config flow using HA's JWT state validation.
+The return destination is this instance's origin, never a stored hostname.
 """
 from __future__ import annotations
 
@@ -12,6 +11,7 @@ from typing import Any
 from aiohttp import web
 
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import UnknownFlow
 from homeassistant.helpers import http
 from homeassistant.helpers.config_entry_oauth2_flow import _decode_jwt
 
@@ -23,43 +23,20 @@ from .const import (
 )
 
 
-_SVG_CUBE = (
-    '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#3D5AF1"'
-    ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2'
-    ' 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"></path>'
-    '<path d="m3.3 7 8.7 5 8.7-5"></path><path d="M12 22V12"></path></svg>'
-)
-_SVG_HOME = (
-    '<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#18BCF2"'
-    ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5"></path>'
-    '<path d="M9 21v-6h6v6"></path></svg>'
-)
-_SVG_CHECK = (
-    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
-    ' stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
-    '<path d="M20 6 9 17l-5-5"></path></svg>'
-)
-_SVG_X = (
-    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
-    ' stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'
-    '<path d="M18 6 6 18"></path><path d="M6 6l12 12"></path></svg>'
-)
-_SVG_PENCIL = (
-    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
-    ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    '<path d="M12 20h9"></path>'
-    '<path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>'
-)
+# Material Design Icons, same pinned version as the woowtech website.
+_SVG_CUBE = '<span class="mdi mdi-cloud-outline" aria-hidden="true"></span>'
+_SVG_HOME = '<span class="mdi mdi-home-assistant" aria-hidden="true"></span>'
+_SVG_CHECK = '<span class="mdi mdi-check-circle-outline" aria-hidden="true"></span>'
+_SVG_X = '<span class="mdi mdi-alert-circle-outline" aria-hidden="true"></span>'
+_SVG_PENCIL = '<span class="mdi mdi-pencil-outline" aria-hidden="true"></span>'
 
 _VARIANTS = {
     "success": {
-        "badge_text": "已授權",
-        "title": "已成功連結 Home Assistant",
+        "badge_text": "已收到回應",
+        "title": "已收到授權回應",
         "subtitle": (
-            "Woow 已完成 OAuth 授權，系統將自動帶你返回 Home Assistant 整合頁面。"
-            "你也可以立即返回。"
+            "請回到 Home Assistant 繼續選擇工作區與服務，完成連線設定。"
+            "連線狀態會在設定完成後顯示。"
         ),
         "pill_icon": _SVG_CHECK,
         "pill_text": "正在返回整合頁面…",
@@ -69,10 +46,10 @@ _VARIANTS = {
     "error": {
         "badge_text": "授權失敗",
         "title": "Home Assistant 連結失敗",
-        "subtitle": "授權未完成或已逾時。請確認下方的 Home Assistant 網址後重新嘗試。",
+        "subtitle": "授權未完成或連結已逾時。請回到 Home Assistant 重新加入整合。",
         "pill_icon": _SVG_X,
         "pill_text": "授權遭拒或已逾時",
-        "primary_text": "重新嘗試",
+        "primary_text": "返回 Home Assistant",
         "secondary": (
             '<button class="woow-btn-text" id="woow-secondary-btn" type="button">'
             "關閉視窗</button>"
@@ -80,148 +57,74 @@ _VARIANTS = {
     },
 }
 
-_STYLE = (
-    "*{box-sizing:border-box}"
-    "body{margin:0;min-height:100vh;display:flex;align-items:center;"
-    "justify-content:center;background:#eef0f4;padding:24px;color:#14161b;"
-    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
-    "'PingFang TC','Microsoft JhengHei',sans-serif}"
-    ".woow-card{width:100%;max-width:460px;background:#fff;border:1px solid #e8eaef;"
-    "border-radius:18px;box-shadow:0 1px 2px rgba(17,24,39,.04),"
-    "0 4px 14px rgba(17,24,39,.035);overflow:hidden}"
-    ".woow-header{position:relative;height:188px;overflow:hidden;"
-    "background:linear-gradient(135deg, #5b73ff 0%, #3d5af1 60%, #2e45d6 100%)}"
-    ".woow-header .dots{position:absolute;inset:0;background-size:18px 18px;"
-    "opacity:.55;background-image:radial-gradient(rgba(255,255,255,.16) 1px,"
-    "transparent 1px)}"
-    ".woow-header .glow{position:absolute;top:-50px;right:-40px;width:200px;"
-    "height:200px;border-radius:50%;"
-    "background:radial-gradient(circle, rgba(255,255,255,.22), transparent 70%)}"
-    ".woow-badge{position:absolute;top:14px;left:14px;display:inline-flex;"
-    "align-items:center;gap:7px;background:rgba(255,255,255,.94);font-size:12px;"
-    "font-weight:700;padding:6px 12px;border-radius:999px}"
-    ".woow-badge .dot{width:7px;height:7px;border-radius:50%}"
-    ".woow-icons{position:absolute;inset:0;display:flex;align-items:center;"
-    "justify-content:center;gap:20px}"
-    ".woow-tile{width:64px;height:64px;border-radius:16px;background:#fff;"
-    "box-shadow:0 10px 28px rgba(20,22,40,.25);display:flex;align-items:center;"
-    "justify-content:center}"
-    ".woow-pulse{display:flex;gap:5px;align-items:center}"
-    ".woow-pulse span{width:6px;height:6px;border-radius:50%;background:#fff;"
-    "animation:pulseDot 1.4s ease-in-out infinite}"
-    ".woow-pulse span:nth-child(2){animation-delay:.2s}"
-    ".woow-pulse span:nth-child(3){animation-delay:.4s}"
-    "@keyframes pulseDot{0%,100%{opacity:.3}50%{opacity:1}}"
-    ".woow-body{padding:24px 26px 26px}"
-    ".woow-title{font-size:21px;font-weight:800;letter-spacing:-.02em;"
-    "line-height:1.25}"
-    ".woow-subtitle{margin-top:8px;font-size:14.5px;line-height:1.6;color:#3c4150}"
-    ".woow-pill{margin-top:16px;display:inline-flex;align-items:center;gap:8px;"
-    "padding:8px 13px;border-radius:10px;font-size:13.5px;font-weight:600}"
-    ".woow-section{margin-top:18px;padding-top:18px;border-top:1px solid #eef0f4}"
-    ".woow-label{font-size:11.5px;font-weight:700;letter-spacing:.07em;color:#8a909e}"
-    ".woow-url-row{margin-top:8px;display:flex;align-items:center;gap:10px}"
-    ".woow-url{flex:1 1 0;min-width:0;font-size:14px;color:#3b69ef;"
-    "word-break:break-all;font-family:'JetBrains Mono',ui-monospace,monospace}"
-    ".woow-input{flex:1 1 0;min-width:0;font-size:14px;padding:8px 10px;"
-    "border:1px solid #e8eaef;border-radius:10px;color:#14161b;"
-    "font-family:'JetBrains Mono',ui-monospace,monospace}"
-    ".woow-iconbtn{flex:0 0 auto;width:34px;height:34px;display:inline-flex;"
-    "align-items:center;justify-content:center;border:1px solid #e8eaef;"
-    "background:#fff;border-radius:10px;color:#8a909e;cursor:pointer;"
-    "box-shadow:0 1px 1px rgba(17,24,39,.04)}"
-    ".woow-help{margin-top:8px;font-size:12px;color:#8a909e}"
-    ".woow-actions{margin-top:20px;display:flex;gap:10px}"
-    ".woow-btn-primary{appearance:none;border:none;cursor:pointer;"
-    "font-family:inherit;font-weight:700;font-size:14px;color:#fff;"
-    "background:#3d5af1;border-radius:10px;padding:11px 18px;"
-    "box-shadow:0 4px 12px rgba(61,90,241,.32)}"
-    ".woow-btn-text{appearance:none;border:none;background:transparent;"
-    "cursor:pointer;font-family:inherit;font-weight:600;font-size:14px;"
-    "color:#3c4150;border-radius:10px;padding:11px 14px}"
-    "body[data-status='success'] .woow-badge{color:#157f43}"
-    "body[data-status='success'] .woow-badge .dot{background:#1fa055}"
-    "body[data-status='success'] .woow-pill{background:#e7f6ec;color:#157f43}"
-    "body[data-status='error'] .woow-badge{color:#cf3439}"
-    "body[data-status='error'] .woow-badge .dot{background:#e5484d}"
-    "body[data-status='error'] .woow-pill{background:#fdecec;color:#cf3439}"
-)
+_STYLE = """
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eff1f5;padding:24px 16px;color:#212121;font:15px/1.6 'Outfit','Noto Sans TC',system-ui,sans-serif}
+.woow-card{width:100%;max-width:480px;background:#fff;border:1px solid rgba(33,33,33,.08);border-radius:20px;padding:32px;box-shadow:0 4px 16px rgba(33,33,33,.06)}
+.woow-brand{font:600 28px 'Poppins',sans-serif;letter-spacing:-.04em;color:#6183fc}
+.woow-eyebrow{font-size:13px;color:#646262;margin:4px 0 24px}
+.woow-icons{display:flex;align-items:center;gap:16px;color:#6183fc;font-size:32px;margin-bottom:20px}
+.woow-icons .mdi-link-variant{font-size:22px}
+.woow-badge{font-size:13px;color:#646262}
+.woow-title{font:600 24px/1.4 'Poppins','Noto Sans TC',sans-serif;letter-spacing:-.02em;margin:8px 0}
+.woow-subtitle{font-size:15px;color:#646262}
+.woow-pill{display:flex;align-items:center;gap:8px;background:#eef2ff;border-radius:12px;padding:12px 16px;margin-top:20px;font-size:14px}
+.woow-pill .mdi{font-size:22px;color:#6183fc}
+body[data-status='error'] .woow-pill{background:#fff1f0;color:#b42318}
+body[data-status='error'] .woow-pill .mdi{color:#b42318}
+.woow-section{border-top:1px solid rgba(33,33,33,.08);margin-top:24px;padding-top:20px}
+.woow-label,.woow-help{font-size:13px;color:#646262}
+.woow-url{display:block;overflow-wrap:anywhere;font-size:14px;margin:8px 0;color:#212121}
+.woow-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:24px}
+.woow-actions button{border:0;border-radius:999px;min-height:44px;padding:12px 20px;cursor:pointer;font:600 15px 'Poppins','Noto Sans TC',sans-serif}
+.woow-btn-primary{background:#6183fc;color:white}
+.woow-btn-primary:hover{background:#3f63e8}
+.woow-btn-text{background:#eff1f5;color:#212121}
+button:focus-visible{outline:3px solid #3f63e8;outline-offset:3px}
+@media(max-width:480px){.woow-card{padding:24px}.woow-title{font-size:22px}}
+"""
 
 _BODY_TEMPLATE = (
-    '<div class="woow-card"><div class="woow-header">'
-    '<div class="dots"></div><div class="glow"></div>'
-    '<span class="woow-badge"><span class="dot"></span>{badge_text}</span>'
-    '<div class="woow-icons"><div class="woow-tile">{cube}</div>'
-    '<div class="woow-pulse"><span></span><span></span><span></span></div>'
-    '<div class="woow-tile">{home}</div></div></div>'
-    '<div class="woow-body">'
-    '<div class="woow-title">{title}</div>'
-    '<div class="woow-subtitle">{subtitle}</div>'
-    '<span class="woow-pill">{pill_icon}<span id="woow-pill-text">{pill_text}</span></span>'
-    '<div class="woow-section"><div class="woow-label">HOME ASSISTANT 執行個體</div>'
-    '<div class="woow-url-row" id="woow-view-row">'
+    '<main class="woow-card"><div class="woow-brand">woowtech</div>'
+    '<p class="woow-eyebrow">智慧家庭連結</p>'
+    '<div class="woow-icons">{cube}<span class="mdi mdi-link-variant" aria-hidden="true"></span>{home}</div>'
+    '<div class="woow-badge">{badge_text}</div><h1 class="woow-title">{title}</h1>'
+    '<p class="woow-subtitle">{subtitle}</p>'
+    '<div class="woow-pill" role="status">{pill_icon}<span id="woow-pill-text">{pill_text}</span></div>'
+    '<div class="woow-section"><div class="woow-label">Home Assistant 網址</div>'
     '<span class="woow-url" id="woow-ha-url"></span>'
-    '<button class="woow-iconbtn" id="woow-edit-btn" type="button" title="編輯網址">{pencil}</button>'
-    '</div>'
-    '<div class="woow-url-row" id="woow-edit-row" style="display:none">'
-    '<input class="woow-input" id="woow-url-input" type="url" inputmode="url" />'
-    '<button class="woow-iconbtn" id="woow-save-btn" type="button" title="儲存">{check}</button>'
-    '<button class="woow-iconbtn" id="woow-cancel-btn" type="button" title="取消">{x}</button>'
-    '</div>'
-    '<div class="woow-help">此網址僅儲存於你的瀏覽器。</div></div>'
-    '<div class="woow-actions">'
-    '<button class="woow-btn-primary" id="woow-primary-btn" type="button">{primary_text}</button>'
-    '{secondary}</div></div></div>'
+    '<div class="woow-help">回到這台 Home Assistant 繼續設定。</div></div>'
+    '<div class="woow-actions"><button class="woow-btn-primary" id="woow-primary-btn" type="button">{primary_text}</button>'
+    '{secondary}</div></main>'
 )
 
-_SCRIPT = (
-    "(function(){"
-    "var status=document.body.getAttribute('data-status');"
-    "var KEY='woow_ha_url';"
-    "function clean(u){return (u||'').trim().replace(/\\/+$/,'');}"
-    "var stored=null;try{stored=localStorage.getItem(KEY);}catch(e){}"
-    "var haUrl=clean(stored)||clean(location.origin);"
-    "var urlEl=document.getElementById('woow-ha-url');"
-    "if(urlEl){urlEl.textContent=haUrl;}"
-    "function returnToIntegrations(){location.href=haUrl+'/config/integrations/dashboard';}"
-    "var pill=document.getElementById('woow-pill-text');"
-    # 倒數機制（僅 success 模式作用）；編輯網址時暫停、存檔/取消後重新開始，避免自動返回打斷編輯。
-    "var secs=WOOW_LINGER;var timer=null;"
-    "function renderPill(){if(pill){pill.textContent='正在返回整合頁面…（'+secs+'）';}}"
-    "function finishReturn(){if(timer){clearInterval(timer);timer=null;}"
-    "try{window.close();}catch(e){}returnToIntegrations();}"
-    "function startCountdown(){if(status!=='success'){return;}secs=WOOW_LINGER;renderPill();"
-    "timer=setInterval(function(){secs-=1;renderPill();if(secs<=0){finishReturn();}},1000);}"
-    "function stopCountdown(){if(timer){clearInterval(timer);timer=null;}}"
-    "var viewRow=document.getElementById('woow-view-row');"
-    "var editRow=document.getElementById('woow-edit-row');"
-    "var input=document.getElementById('woow-url-input');"
-    "var editBtn=document.getElementById('woow-edit-btn');"
-    "var saveBtn=document.getElementById('woow-save-btn');"
-    "var cancelBtn=document.getElementById('woow-cancel-btn');"
-    "if(editBtn){editBtn.addEventListener('click',function(){stopCountdown();"
-    "if(status==='success'&&pill){pill.textContent='自動返回已暫停（編輯中）';}"
-    "input.value=haUrl;viewRow.style.display='none';editRow.style.display='flex';input.focus();});}"
-    "if(cancelBtn){cancelBtn.addEventListener('click',function(){"
-    "editRow.style.display='none';viewRow.style.display='flex';startCountdown();});}"
-    "if(saveBtn){saveBtn.addEventListener('click',function(){var v=clean(input.value)||haUrl;"
-    "haUrl=v;try{localStorage.setItem(KEY,v);}catch(e){}if(urlEl){urlEl.textContent=v;}"
-    "editRow.style.display='none';viewRow.style.display='flex';startCountdown();});}"
-    "var primary=document.getElementById('woow-primary-btn');"
-    "var secondary=document.getElementById('woow-secondary-btn');"
-    "if(status==='success'){"
-    # WOOW_INSTANT/WOOW_LINGER 由 _render_page 注入（見 const CALLBACK_AUTO_RETURN_MODE）。
-    # instant：載入即 close；linger：先顯示品牌頁 + 倒數，再 close/導回（倒數畫面＝fallback 畫面）。
-    "if(WOOW_INSTANT){try{window.close();}catch(e){}}"
-    "startCountdown();"
-    "if(primary){primary.addEventListener('click',function(){finishReturn();});}"
-    "}else{"
-    "if(primary){primary.addEventListener('click',function(){"
-    "try{window.close();}catch(e){}returnToIntegrations();});}"
-    "if(secondary){secondary.addEventListener('click',function(){"
-    "try{window.close();}catch(e){}});}"
-    "}})();"
-)
+_SCRIPT = """
+(function(){
+  var status=document.body.getAttribute('data-status');
+  // The callback already landed on the correct HA origin. A previously stored
+  // hostname must never silently redirect this flow to another installation.
+  var haUrl=location.origin;
+  document.getElementById('woow-ha-url').textContent=haUrl;
+  var timer=null;
+  function finishReturn(){
+    if(timer){clearInterval(timer);}
+    try{window.close();}catch(e){}
+    location.replace(haUrl+'/config/integrations/dashboard');
+  }
+  document.getElementById('woow-primary-btn').addEventListener('click',finishReturn);
+  var secondary=document.getElementById('woow-secondary-btn');
+  if(secondary){secondary.addEventListener('click',function(){try{window.close();}catch(e){}});}
+  if(status==='success'){
+    if(WOOW_INSTANT){try{window.close();}catch(e){}}
+    var secs=WOOW_LINGER;
+    var pill=document.getElementById('woow-pill-text');
+    timer=setInterval(function(){
+      secs-=1; pill.textContent='正在返回整合頁面…（'+secs+'）';
+      if(secs<=0){finishReturn();}
+    },1000);
+  }
+})();
+"""
 
 
 def _render_page(
@@ -230,7 +133,7 @@ def _render_page(
     instant: bool | None = None,
     linger: int | None = None,
 ) -> str:
-    """Render the 方向 A branded page for `status` ('success' or 'error').
+    """Render the woowtech page for `status` ('success' or 'error').
 
     Auto-return behaviour is injected as JS globals WOOW_INSTANT / WOOW_LINGER.
     Both default to the const CALLBACK_AUTO_RETURN_MODE / CALLBACK_LINGER_SECONDS;
@@ -263,7 +166,9 @@ def _render_page(
     return (
         "<!DOCTYPE html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>Woow · OAuth 授權回調</title>"
+        "<title>連結 Home Assistant｜woowtech</title>"
+        '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600&amp;family=Outfit:wght@400;500;600&amp;family=Noto+Sans+TC:wght@400;500;600;700&amp;display=swap">'
+        '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">'
         f"<style>{_STYLE}</style></head>"
         f"<body data-status=\"{safe_status}\">{body}"
         f"<script>{config_js}{_SCRIPT}</script></body></html>"
@@ -284,7 +189,7 @@ class WoowOAuth2CallbackView(http.HomeAssistantView):
 
         hass = request.app[http.KEY_HASS]
         state = _decode_jwt(hass, request.query["state"])
-        if state is None:
+        if not isinstance(state, dict) or not isinstance(state.get("flow_id"), str):
             return _html(_render_page("error"), status=400)
 
         user_input: dict[str, Any] = {"state": state}
@@ -295,10 +200,15 @@ class WoowOAuth2CallbackView(http.HomeAssistantView):
         else:
             return _html(_render_page("error"), status=400)
 
-        await hass.config_entries.flow.async_configure(
-            flow_id=state["flow_id"], user_input=user_input
-        )
-        status = "error" if "error" in user_input else "success"
+        try:
+            result = await hass.config_entries.flow.async_configure(
+                flow_id=state["flow_id"], user_input=user_input
+            )
+        except UnknownFlow:
+            return _html(_render_page("error"), status=400)
+        rejected = (result.get("type") == "abort"
+                    and result.get("reason") != "reauth_successful")
+        status = "error" if "error" in user_input or rejected else "success"
         return _html(_render_page(status))
 
 

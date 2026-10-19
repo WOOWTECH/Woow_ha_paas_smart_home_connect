@@ -26,7 +26,7 @@ class WoowPaasOAuth2(LocalOAuth2ImplementationWithPkce):
     @property
     def name(self) -> str:
         """Name of the implementation."""
-        return "Woow PaaS Smart Home"
+        return "woowtech 智慧家庭連結"
 
     @property
     def extra_authorize_data(self) -> dict:

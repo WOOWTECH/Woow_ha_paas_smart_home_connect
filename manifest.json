@@ -1,6 +1,6 @@
 {
   "domain": "woow_paas_smart_home",
-  "name": "Woow PaaS Smart Home",
+  "name": "woowtech PaaS Smart Home",
   "codeowners": ["@eugenechen0514"],
   "config_flow": true,
   "dependencies": [],

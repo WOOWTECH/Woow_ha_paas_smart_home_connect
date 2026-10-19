@@ -73,7 +73,10 @@ async def test_async_step_user_routes_app_to_device(
 
     token = http.current_request.set(request)
     try:
-        await flow.async_step_user(None)
+        first = await flow.async_step_user(None)
+        assert first["step_id"] == "user"
+        device_step.assert_not_awaited()
+        await flow.async_step_user({"service_kind": "remote_access"})
     finally:
         http.current_request.reset(token)
 
@@ -99,7 +102,10 @@ async def test_async_step_user_routes_browser_to_web_flow(
 
     token = http.current_request.set(request)
     try:
-        await flow.async_step_user(None)
+        first = await flow.async_step_user(None)
+        assert first["step_id"] == "user"
+        super_step.assert_not_awaited()
+        await flow.async_step_user({"service_kind": "remote_access_mcp"})
     finally:
         http.current_request.reset(token)
 
