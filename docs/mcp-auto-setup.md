@@ -126,7 +126,11 @@ VM 已完成正式 PaaS 新帳號登入、OAuth、工作區／服務自動建立
 | 390 × 844 手機檢查 | 裝置頁及實體詳細視窗通過 | 外網裝置頁及實體詳細視窗通過 |
 | HA 重啟 | 沿用 Server 與密鑰 | 沿用 Server 與密鑰，無重複建立 |
 
-完整 Connect 回歸 184 項、MCP 專項 31 項通過。實體 HA 這次完整重啟，外網網頁中斷約 23 秒，Smart Home 隧道約 35 秒；這是 HA 重啟時間，不是 Odoo chart 升級的停機驗收。
+完整 Connect 回歸 184 項、MCP 專項 31 項、MCP 相關單元測試 512 項通過。另以 HA 2026.6.4 與正式 `ha-mcp==8.7.0` 完成 4 項嵌入式端到端測試（含 LLM API 完整工具清單轉換）。此測試透過驗收 fixture 指定正式 Server；fork 原有測試預設會建立 7.7.0 wheel，低於 component 的 7.10.0 下限，因此沒有宣稱該 fork 自建 Server wheel 的測試通過。
+
+兩台主機各 191 個安裝檔案與 Connect `3d72dfc3fca054849bd97485e07f1e8f7d1b8a3c`／MCP `da0d2f3e7dcd85927921599ed49c0b8c61aea456` 比對，差異為零。Connect 的 GitHub 與 Gitea `main` 均已同步。
+
+實體 HA 最後一次完整重啟（台灣時間 2026-10-20 00:22～00:23），外網網頁中斷約 21 秒，Smart Home 隧道約 43 秒；這是 HA 重啟時間，不是 Odoo chart 升級的停機驗收。
 
 ### 新版 HA HTTP 設定
 
