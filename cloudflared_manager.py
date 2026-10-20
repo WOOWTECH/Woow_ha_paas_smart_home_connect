@@ -431,6 +431,11 @@ class CloudflaredManager:
         cmd = [
             str(self._binary_path),
             "tunnel",
+            # This connector publishes HTTP/WebSocket/MCP only. TCP avoids
+            # repeated QUIC idle timeouts observed on home network UDP paths.
+            # Keep this transport on initial start and watchdog restart.
+            "--protocol",
+            "http2",
             "run",
             "--token",
             tunnel_token,
@@ -438,7 +443,7 @@ class CloudflaredManager:
 
         # Log with masked token
         _LOGGER.info(
-            "Starting cloudflared tunnel: %s tunnel run --token ****",
+            "Starting cloudflared tunnel: %s tunnel --protocol http2 run --token ****",
             self._binary_path,
         )
 
