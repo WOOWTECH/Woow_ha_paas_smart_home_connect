@@ -56,8 +56,9 @@ import hashlib,json,os,pathlib,signal,sys,time
 records=pathlib.Path({str(records)!r})
 count=len(records.read_text().splitlines())+1 if records.exists() else 1
 token=sys.argv[sys.argv.index('--token')+1]
+protocol=sys.argv[sys.argv.index('--protocol')+1] if '--protocol' in sys.argv else 'auto'
 with records.open('a') as stream:
- stream.write(json.dumps({{'pid':os.getpid(),'identity':hashlib.sha256(token.encode()).hexdigest(),'count':count}})+'\\n')
+ stream.write(json.dumps({{'pid':os.getpid(),'identity':hashlib.sha256(token.encode()).hexdigest(),'count':count,'protocol':protocol}})+'\\n')
 fail=pathlib.Path({str(fail_range)!r})
 if fail.exists() and count in json.loads(fail.read_text()):
  raise SystemExit(42)
@@ -98,6 +99,7 @@ def test_unexpected_exit_restarts_same_identity(manager_factory):
             await wait_until(lambda: len(read())==2 and manager.is_running)
             assert manager._process.pid != first.pid
             assert read()[0]['identity'] == read()[1]['identity']
+            assert [item['protocol'] for item in read()] == ['http2', 'http2']
             await asyncio.sleep(0.15)
             assert len(read()) == 2
         finally:
@@ -707,7 +709,9 @@ def test_reset_cancelled_while_spawn_returns_keeps_child_owned(manager_factory, 
 
             monkeypatch.setattr(module.asyncio, 'create_subprocess_exec', observed_spawn)
             reset = asyncio.create_task(manager.reset_tunnel())
-            await wait_until(lambda: len(spawned) == 1)
+            # The OS handle can exist before the child has written its receipt.
+            # Cancel only after the child-start boundary this test asserts.
+            await wait_until(lambda: len(spawned) == 1 and len(read()) == 2)
             reset.cancel()
             asyncio.get_running_loop().call_later(0.05, release.set)
             with pytest.raises(asyncio.CancelledError):
