@@ -106,6 +106,10 @@ MCP URL 恢復放在 sensor 的 state；既有 unique_id、entity_id 及裝置�
 
 ### Portable watchdog regression gate
 
+0.4.17 修正經由本身隧道重新載入整合時，HTTP 請求中斷可能取消卸載、
+讓整合卡在 `unload_in_progress` 的情況。已開始的程序清理會先完成，
+再交回 HA 完成重新載入；HA 關機時仍保留取消語意。
+
 Pull requests run `watchdog-regression` with Python 3.13. Reproduce its test
 steps in a disposable environment:
 
