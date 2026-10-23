@@ -467,15 +467,32 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: WoowConfigEntry
 ) -> bool:
     """Unload a Woow PaaS Smart Home config entry."""
-    # 先收掉撤權 reset（可能正在等傳播或持有 manager 的鎖準備重啟 connector）：
-    # 取消會走 reset 自己的收尾，不必等它完成一次重啟再被下面的 stop_tunnel 停掉。
-    await entry.runtime_data.coordinator.async_cancel_access_reset()
-    if not await entry.runtime_data.tunnel_manager.stop_tunnel():
-        return False
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded and entry.runtime_data.unsub_tunnel_status is not None:
-        entry.runtime_data.unsub_tunnel_status()
-    return unloaded
+    async def unload() -> bool:
+        # Finish a pending access reset before stopping its connector.
+        await entry.runtime_data.coordinator.async_cancel_access_reset()
+        if not await entry.runtime_data.tunnel_manager.stop_tunnel():
+            return False
+        unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        if unloaded and entry.runtime_data.unsub_tunnel_status is not None:
+            entry.runtime_data.unsub_tunnel_status()
+        return unloaded
+
+    # A reload requested through this tunnel disconnects its own HTTP caller.
+    # Do not let that cancellation leave HA in UNLOAD_IN_PROGRESS with recovery
+    # disabled. Finish the owned cleanup, then let HA complete its reload.
+    task = hass.async_create_task(unload(), f"woow_unload_{entry.entry_id}")
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        if hass.is_stopping:
+            raise asyncio.CancelledError
+        _LOGGER.warning("Unload request cancelled; completed cleanup so HA can finish reloading")
+    return result
 
 
 async def async_remove_entry(
