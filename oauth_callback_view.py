@@ -11,7 +11,7 @@ from typing import Any
 from aiohttp import web
 
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import UnknownFlow
+from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 from homeassistant.helpers import http
 from homeassistant.helpers.config_entry_oauth2_flow import _decode_jwt
 
@@ -31,6 +31,15 @@ _SVG_X = '<span class="mdi mdi-alert-circle-outline" aria-hidden="true"></span>'
 _SVG_PENCIL = '<span class="mdi mdi-pencil-outline" aria-hidden="true"></span>'
 
 _VARIANTS = {
+    "pending": {
+        "badge_text": "授權回應已收到",
+        "title": "請返回 Home Assistant 確認連結結果",
+        "subtitle": "Home Assistant 正在完成授權流程。請回到整合頁確認是否成功連結。",
+        "pill_icon": _SVG_CHECK,
+        "pill_text": "連結結果以整合頁顯示為準",
+        "primary_text": "返回整合頁確認",
+        "secondary": "",
+    },
     "success": {
         "badge_text": "已收到回應",
         "title": "已收到授權回應",
@@ -158,7 +167,7 @@ def _render_page(
         check=_SVG_CHECK,
         x=_SVG_X,
     )
-    safe_status = "error" if status == "error" else "success"
+    safe_status = status
     config_js = (
         f"var WOOW_INSTANT={'true' if instant else 'false'};"
         f"var WOOW_LINGER={int(linger)};"
@@ -189,7 +198,9 @@ class WoowOAuth2CallbackView(http.HomeAssistantView):
 
         hass = request.app[http.KEY_HASS]
         state = _decode_jwt(hass, request.query["state"])
-        if not isinstance(state, dict) or not isinstance(state.get("flow_id"), str):
+        if (not isinstance(state, dict)
+                or not isinstance(state.get("flow_id"), str)
+                or not state["flow_id"]):
             return _html(_render_page("error"), status=400)
 
         user_input: dict[str, Any] = {"state": state}
@@ -206,9 +217,19 @@ class WoowOAuth2CallbackView(http.HomeAssistantView):
             )
         except UnknownFlow:
             return _html(_render_page("error"), status=400)
-        rejected = (result.get("type") == "abort"
-                    and result.get("reason") != "reauth_successful")
-        status = "error" if "error" in user_input or rejected else "success"
+        result_type = result.get("type")
+        reauth_done = (
+            result_type in (FlowResultType.ABORT, "abort")
+            and result.get("reason") == "reauth_successful"
+        )
+        rejected = result_type in (FlowResultType.ABORT, "abort") and not reauth_done
+        # An external-step response only acknowledges code delivery. The token
+        # exchange and workspace selection continue in Home Assistant's flow.
+        status = (
+            "error" if "error" in user_input or rejected
+            else "success" if reauth_done
+            else "pending"
+        )
         return _html(_render_page(status))
 
 
