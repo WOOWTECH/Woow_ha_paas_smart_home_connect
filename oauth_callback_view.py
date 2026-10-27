@@ -142,7 +142,7 @@ def _render_page(
     instant: bool | None = None,
     linger: int | None = None,
 ) -> str:
-    """Render the woowtech page for `status` ('success' or 'error').
+    """Render the woowtech page for `status` ('pending', 'success' or 'error').
 
     Auto-return behaviour is injected as JS globals WOOW_INSTANT / WOOW_LINGER.
     Both default to the const CALLBACK_AUTO_RETURN_MODE / CALLBACK_LINGER_SECONDS;
@@ -152,7 +152,7 @@ def _render_page(
         instant = CALLBACK_AUTO_RETURN_MODE == "instant"
     if linger is None:
         linger = CALLBACK_LINGER_SECONDS
-    variant = _VARIANTS["error" if status == "error" else "success"]
+    variant = _VARIANTS[status if status in _VARIANTS else "success"]
     body = _BODY_TEMPLATE.format(
         badge_text=variant["badge_text"],
         title=variant["title"],
