@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from multidict import MultiDict
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 from homeassistant.helpers import http
@@ -24,9 +25,11 @@ from custom_components.woow_paas_smart_home.oauth_callback_view import (
 )
 
 
-def _request(hass: HomeAssistant, query: dict) -> MagicMock:
+def _request(
+    hass: HomeAssistant, query: dict | list[tuple[str, str]] | MultiDict
+) -> MagicMock:
     request = MagicMock()
-    request.query = query
+    request.query = MultiDict(query)
     request.app = {http.KEY_HASS: hass}
     return request
 
@@ -135,6 +138,26 @@ async def test_missing_code_and_error_renders_400(
     resp = await WoowOAuth2CallbackView().get(_request(hass, {"state": state}))
 
     assert resp.status == 400
+    spy.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        [("state", "valid"), ("state", "wrong"), ("code", "x")],
+        [("state", "valid"), ("code", "x"), ("code", "y")],
+        [("state", "valid"), ("code", "x"), ("error", "access_denied")],
+        [("state", "valid"), ("error", "one"), ("error", "two")],
+    ],
+)
+async def test_ambiguous_callback_rejected_before_flow(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, query: list[tuple[str, str]]
+) -> None:
+    spy = _spy_flow(hass, monkeypatch)
+    response = await WoowOAuth2CallbackView().get(_request(hass, MultiDict(query)))
+
+    assert response.status == 400
+    assert "Home Assistant 連結失敗" in response.text
     spy.assert_not_awaited()
 
 

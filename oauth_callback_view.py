@@ -193,21 +193,27 @@ class WoowOAuth2CallbackView(http.HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Receive the authorization code/error and resume the config flow."""
-        if "state" not in request.query:
+        # Reject ambiguous callback shapes before consuming any pending flow.
+        # MultiDict's [] lookup would otherwise silently choose one value.
+        query = request.query
+        state_count = len(query.getall("state", []))
+        code_count = len(query.getall("code", []))
+        error_count = len(query.getall("error", []))
+        if state_count != 1 or (code_count, error_count) not in {(1, 0), (0, 1)}:
             return _html(_render_page("error"), status=400)
 
         hass = request.app[http.KEY_HASS]
-        state = _decode_jwt(hass, request.query["state"])
+        state = _decode_jwt(hass, query["state"])
         if (not isinstance(state, dict)
                 or not isinstance(state.get("flow_id"), str)
                 or not state["flow_id"]):
             return _html(_render_page("error"), status=400)
 
         user_input: dict[str, Any] = {"state": state}
-        if "code" in request.query:
-            user_input["code"] = request.query["code"]
-        elif "error" in request.query:
-            user_input["error"] = request.query["error"]
+        if "code" in query:
+            user_input["code"] = query["code"]
+        elif "error" in query:
+            user_input["error"] = query["error"]
         else:
             return _html(_render_page("error"), status=400)
 
