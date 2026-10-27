@@ -38,11 +38,18 @@ class TestSaRevision(unittest.TestCase):
         for value in (None, {}, [{'id': 108, 'is_protected': True}],
                       [{'id': 108, 'access_policies': None}],
                       [{'id': True, 'access_policies': []}],
-                      [{'id': 108, 'access_publish_pending': True,
-                        'access_policies': []}],
                       [{'id': 108, 'access_policies': []}]):
             with self.subTest(value=value):
                 self.assertIsNone(revision(value))
+
+    def test_token_denial_pending_does_not_block_stream_cutoff(self):
+        """The pending flag may outlive CF policy publication and token revoke acceptance."""
+        before = [{'id': 108, 'is_protected': True,
+                   'access_publish_pending': True,
+                   'access_policies': [{'id': 221, 'decision': 'allow'}]}]
+        after = [{'id': 108, 'is_protected': True,
+                  'access_publish_pending': True, 'access_policies': []}]
+        self.assertNotEqual(revision(before), revision(after))
 
 
 if __name__ == '__main__':

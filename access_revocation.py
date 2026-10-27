@@ -53,12 +53,8 @@ def security_access_policy_revision(routes: object) -> int | None:
         return None
     state = []
     for route in routes:
-        if not isinstance(route, dict) or type(route.get("id")) is not int:
-            return None
-        # Never acknowledge a new policy fingerprint before the provider
-        # publication has completed. Otherwise a reset during a pending write
-        # could let a client reconnect under the old edge policy.
-        if route.get("access_publish_pending") is not False:
+        if (not isinstance(route, dict) or type(route.get("id")) is not int
+                or type(route.get("is_protected")) is not bool):
             return None
         policies = route.get("access_policies")
         if not isinstance(policies, list) or any(not isinstance(p, dict) for p in policies):
