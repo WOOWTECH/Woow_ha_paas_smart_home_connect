@@ -317,6 +317,9 @@ class TunnelStatusSensor(CoordinatorEntity[TunnelCoordinator], SensorEntity):
         data = self.coordinator.data
         if data is not None and data.state is not None:
             attrs["state"] = data.state
+        revision_attrs = self.coordinator.access_revision_attributes
+        if revision_attrs is not None:
+            attrs.update(revision_attrs)
         return attrs
 
 
