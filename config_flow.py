@@ -92,6 +92,27 @@ def _is_companion_app(user_agent: str) -> bool:
     return "Home Assistant/" in user_agent
 
 
+def _home_in_use(home: dict[str, Any]) -> bool:
+    """Return True unless the service is known to be free.
+
+    Free means unbound and without an attached connector. A platform that does not
+    report these fields counts as in use: a service another installation may be
+    running on must never be taken over without the user choosing it.
+    """
+    return home.get("binding_state") != "unbound" or bool(home.get("connector_count"))
+
+
+def _home_option_label(home: dict[str, Any]) -> str:
+    """Name a service in the selection list, including who is already using it."""
+    if home.get("bound_instance_label"):
+        suffix = f"（已連結：{home['bound_instance_label']}）"
+    elif home.get("binding_state") in ("claimed", "legacy") or home.get("connector_count"):
+        suffix = "（已有其他 Home Assistant 連線）"
+    else:
+        suffix = ""
+    return home["name"] + suffix
+
+
 class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
     """Handle a config flow for Woow PaaS Smart Home."""
 
@@ -499,15 +520,14 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not self._homes:
             return await self.async_step_onboarding()
 
-        if len(self._homes) == 1:
+        if len(self._homes) == 1 and not _home_in_use(self._homes[0]):
             self._onboarding_home = self._homes[0]
             return await self.async_step_onboarding()
 
-        # Multiple matching services require an explicit choice.
+        # Several matching services, or one that another installation already
+        # uses, require an explicit choice.
         home_options = {
-            str(home['id']): home['name'] + (
-                f"（已連結：{home['bound_instance_label']}）"
-                if home.get('bound_instance_label') else '') for home in self._homes
+            str(home['id']): _home_option_label(home) for home in self._homes
         }
         return self.async_show_form(
             step_id="select_home",

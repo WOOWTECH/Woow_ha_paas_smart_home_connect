@@ -63,6 +63,51 @@ async def test_missing_service_in_selected_workspace_is_created(flow, monkeypatc
     onboard.assert_awaited_once()
 
 
+def _select_home_options(result):
+    return next(iter(result["data_schema"].schema.values())).container
+
+
+async def test_single_free_service_is_connected_without_asking(flow, monkeypatch):
+    flow._selected_workspace_id = 2
+    home = {"id": 3, "name": "MCP", "binding_state": "unbound", "connector_count": 0}
+    monkeypatch.setattr(flow, "_async_api_request", AsyncMock(return_value={"homes": [home]}))
+    onboard = AsyncMock(return_value={"step_id": "onboarding"})
+    monkeypatch.setattr(flow, "async_step_onboarding", onboard)
+    assert (await flow.async_step_select_home())["step_id"] == "onboarding"
+    assert flow._onboarding_home == home
+
+
+@pytest.mark.parametrize("home, label", [
+    ({"binding_state": "claimed", "bound_instance_label": "客廳 HA"}, "MCP（已連結：客廳 HA）"),
+    ({"binding_state": "claimed"}, "MCP（已有其他 Home Assistant 連線）"),
+    ({"binding_state": "legacy"}, "MCP（已有其他 Home Assistant 連線）"),
+    ({"binding_state": "unbound", "connector_count": 1}, "MCP（已有其他 Home Assistant 連線）"),
+    # A platform that does not say: still ask, without claiming the service is used.
+    ({}, "MCP"),
+], ids=["claimed-labelled", "claimed", "legacy", "connector-online", "unknown"])
+async def test_single_service_in_use_needs_explicit_choice(flow, monkeypatch, home, label):
+    flow._selected_workspace_id = 2
+    home = {"id": 3, "name": "MCP", **home}
+    monkeypatch.setattr(flow, "_async_api_request", AsyncMock(return_value={"homes": [home]}))
+    onboard = AsyncMock()
+    monkeypatch.setattr(flow, "async_step_onboarding", onboard)
+    result = await flow.async_step_select_home()
+    assert result["step_id"] == "select_home"
+    assert _select_home_options(result) == {"3": label}
+    assert flow._onboarding_home is None
+    onboard.assert_not_awaited()
+
+
+async def test_choosing_the_service_in_use_continues_to_onboarding(flow, monkeypatch):
+    flow._selected_workspace_id = 2
+    home = {"id": 3, "name": "MCP", "binding_state": "claimed"}
+    flow._homes = [home]
+    onboard = AsyncMock(return_value={"step_id": "onboarding"})
+    monkeypatch.setattr(flow, "async_step_onboarding", onboard)
+    assert (await flow.async_step_select_home({"home": "3"}))["step_id"] == "onboarding"
+    assert flow._onboarding_home == home
+
+
 @pytest.mark.parametrize("workspace_id", [None, 2])
 async def test_create_prepare_wait_preserves_choice(flow, monkeypatch, workspace_id):
     flow._selected_workspace_id = workspace_id
