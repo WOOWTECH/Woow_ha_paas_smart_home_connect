@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
+import hashlib
+import json
 import logging
 import time
 from typing import Any, Protocol
@@ -37,6 +39,34 @@ def parse_access_revision(value: object) -> int | None:
     if type(value) is int and value >= 0:
         return value
     return None
+
+
+def security_access_policy_revision(routes: object) -> int | None:
+    """Fingerprint a complete successful SA route/policy readback.
+
+    The SA status API has no numeric revision.  Only a full routes response is
+    usable: a missing policy list is not evidence that policies were removed.
+    A changed fingerprint makes the existing tunnel reset tracker drop old SSH
+    and TCP streams after Cloudflare has published the new policy state.
+    """
+    if not isinstance(routes, list):
+        return None
+    state = []
+    for route in routes:
+        if (not isinstance(route, dict) or type(route.get("id")) is not int
+                or type(route.get("is_protected")) is not bool):
+            return None
+        policies = route.get("access_policies")
+        if not isinstance(policies, list) or any(not isinstance(p, dict) for p in policies):
+            return None
+        state.append({
+            "id": route["id"],
+            "is_protected": route.get("is_protected"),
+            "policies": sorted(policies, key=lambda p: (str(p.get("id")), str(p.get("name")))),
+        })
+    state.sort(key=lambda r: r["id"])
+    canonical = json.dumps(state, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return int.from_bytes(hashlib.sha256(canonical.encode()).digest()[:8], "big")
 
 
 class AccessRevisionTracker:

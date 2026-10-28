@@ -180,20 +180,41 @@ def test_instance_deleted_during_propagation_does_not_reset(tmp_path) -> None:
     _run(tmp_path, scenario, delay=0.3)
 
 
-def test_security_access_does_not_consume_revision(tmp_path) -> None:
+def _sa_routes(*policy_ids: int) -> list[dict]:
+    return [{"id": 108, "is_protected": True,
+             "access_policies": [{"id": pid, "decision": "allow"} for pid in policy_ids]}]
+
+
+def test_security_access_resets_only_when_policy_fingerprint_changes(tmp_path) -> None:
+    """SA has no numeric revision: the API's numeric field is ignored and only a
+    complete route/policy readback with a changed fingerprint drives a reset."""
     async def scenario(hass, entry, coord, api, manager, sensor, events):
-        for revision in (1, 2):
+        async def poll(routes, **extra) -> None:
             api.get_access_status.return_value = {
-                "tunnel_status": "connected", "state": "active", "routes": [],
-                "access_revision": revision,
+                "tunnel_status": "connected", "state": "active", "routes": routes,
+                **extra,
             }
             coord.data = await coord._async_update_data()
+
+        await poll(_sa_routes(220), access_revision=1)
+        await poll(_sa_routes(220), access_revision=2)  # numeric field is not consumed
         await asyncio.sleep(DELAY * 3)
         assert not entry._background_tasks and manager.reset_calls == 0
-        assert coord.access_revision_attributes is None
-        assert sensor.extra_state_attributes == {
-            "product_type": PRODUCT_SECURITY_ACCESS, "state": "active",
-        }
+
+        await poll(_sa_routes())  # the allow policy was removed
+        assert len(entry._background_tasks) == 1
+        await _settle(entry)
+        assert manager.reset_calls == 1
+        attrs = sensor.extra_state_attributes
+        assert attrs["product_type"] == PRODUCT_SECURITY_ACCESS
+        assert attrs["access_revision"] == attrs["access_revision_applied"]
+        last = attrs["last_access_reset"]
+        assert (last["cutoff_verified"], last["restarted"]) == (True, True)
+
+        # A readback without a policy list is not evidence of removal.
+        await poll([{"id": 108, "is_protected": True}])
+        await asyncio.sleep(DELAY * 3)
+        assert not entry._background_tasks and manager.reset_calls == 1
     _run(tmp_path, scenario, product_type=PRODUCT_SECURITY_ACCESS)
 
 

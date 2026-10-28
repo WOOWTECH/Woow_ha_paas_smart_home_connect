@@ -17,7 +17,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .access_revocation import AccessRevisionTracker
+from .access_revocation import AccessRevisionTracker, security_access_policy_revision
 from .api_client import (
     ApiError,
     AuthenticationError,
@@ -228,7 +228,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
 
     @property
     def access_revision_attributes(self) -> dict[str, Any] | None:
-        """撤權版本狀態（給 tunnel status sensor）；舊平台／SA 為 None。不含 token。"""
+        """撤權版本狀態（給 tunnel status sensor）；缺完整平台讀回時為 None。"""
         return self._access.attributes
 
     async def async_cancel_access_reset(self) -> None:
@@ -259,6 +259,7 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
         try:
             if is_sa:
                 data = await self._api_client.get_access_status(self._instance_id)
+                access_revision = security_access_policy_revision(data.get("routes"))
                 remote_status = (data.get("tunnel_status") or "").lower()
                 state = data.get("state")
                 routes = tuple(
@@ -321,10 +322,9 @@ class TunnelCoordinator(DataUpdateCoordinator[TunnelStatusData]):
             if self.instance_deleted:
                 self._async_clear_instance_deleted()
 
-        # 缺欄位／型別不對（舊平台）由 tracker 忽略；SA 先不接（契約「刻意不做」）。
+        # 缺欄位／型別不對（舊平台）由 tracker 忽略。SA 只採信完整政策清單。
         # 已判定刪除的路徑在上面就 return 了，不會走到這裡。
-        if not is_sa:
-            self._access.async_poll(access_revision)
+        self._access.async_poll(access_revision)
 
         # Build the display URL. Smart home uses its stored subdomain; security
         # access uses its first route hostname (empty when active_no_route / 0 routes).
