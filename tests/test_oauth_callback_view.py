@@ -10,7 +10,9 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from multidict import MultiDict
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 from homeassistant.helpers import http
 from homeassistant.helpers.config_entry_oauth2_flow import _encode_jwt
 
@@ -23,9 +25,11 @@ from custom_components.woow_paas_smart_home.oauth_callback_view import (
 )
 
 
-def _request(hass: HomeAssistant, query: dict) -> MagicMock:
+def _request(
+    hass: HomeAssistant, query: dict | list[tuple[str, str]] | MultiDict
+) -> MagicMock:
     request = MagicMock()
-    request.query = query
+    request.query = MultiDict(query)
     request.app = {http.KEY_HASS: hass}
     return request
 
@@ -36,10 +40,11 @@ def _spy_flow(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> AsyncMock
     return spy
 
 
-async def test_success_resumes_flow_and_renders_success_page(
+async def test_code_resumes_flow_without_claiming_completion(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spy = _spy_flow(hass, monkeypatch)
+    spy.return_value = {"type": FlowResultType.EXTERNAL_STEP_DONE}
     state = _encode_jwt(hass, {"flow_id": "flow-1", "redirect_uri": "https://ha/x"})
 
     resp = await WoowOAuth2CallbackView().get(
@@ -54,9 +59,54 @@ async def test_success_resumes_flow_and_renders_success_page(
         "state": {"flow_id": "flow-1", "redirect_uri": "https://ha/x"},
         "code": "the-code",
     }
-    assert "已收到授權回應" in resp.text
+    assert "請返回 Home Assistant 確認連結結果" in resp.text
     assert "已成功連結 Home Assistant" not in resp.text
-    assert "window.close" in resp.text
+    assert 'data-status="pending"' in resp.text
+
+
+async def test_aborted_code_exchange_renders_error(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _spy_flow(hass, monkeypatch)
+    spy.return_value = {"type": FlowResultType.ABORT}
+    state = _encode_jwt(hass, {"flow_id": "flow-1"})
+
+    resp = await WoowOAuth2CallbackView().get(
+        _request(hass, {"state": state, "code": "the-code"})
+    )
+
+    assert resp.status == 200
+    assert 'data-status="error"' in resp.text
+
+
+async def test_reauth_success_retains_completed_status(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _spy_flow(hass, monkeypatch)
+    spy.return_value = {"type": FlowResultType.ABORT, "reason": "reauth_successful"}
+    state = _encode_jwt(hass, {"flow_id": "flow-1"})
+
+    resp = await WoowOAuth2CallbackView().get(
+        _request(hass, {"state": state, "code": "the-code"})
+    )
+
+    assert resp.status == 200
+    assert 'data-status="success"' in resp.text
+
+
+async def test_replayed_callback_returns_400(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = _spy_flow(hass, monkeypatch)
+    spy.side_effect = UnknownFlow("Flow not found")
+    state = _encode_jwt(hass, {"flow_id": "expired"})
+
+    resp = await WoowOAuth2CallbackView().get(
+        _request(hass, {"state": state, "code": "replayed"})
+    )
+
+    assert resp.status == 400
+    assert "Home Assistant 連結失敗" in resp.text
 
 
 async def test_invalid_state_renders_error_400_and_skips_flow(
@@ -91,6 +141,26 @@ async def test_missing_code_and_error_renders_400(
     spy.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        [("state", "valid"), ("state", "wrong"), ("code", "x")],
+        [("state", "valid"), ("code", "x"), ("code", "y")],
+        [("state", "valid"), ("code", "x"), ("error", "access_denied")],
+        [("state", "valid"), ("error", "one"), ("error", "two")],
+    ],
+)
+async def test_ambiguous_callback_rejected_before_flow(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, query: list[tuple[str, str]]
+) -> None:
+    spy = _spy_flow(hass, monkeypatch)
+    response = await WoowOAuth2CallbackView().get(_request(hass, MultiDict(query)))
+
+    assert response.status == 400
+    assert "Home Assistant 連結失敗" in response.text
+    spy.assert_not_awaited()
+
+
 async def test_user_rejected_resumes_with_error_and_renders_error_page(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -121,6 +191,7 @@ def test_rendered_page_matches_woowtech_brand_and_truthful_status() -> None:
     from custom_components.woow_paas_smart_home.oauth_callback_view import _render_page
 
     success = _render_page("success")
+    pending = _render_page("pending")
     error = _render_page("error")
 
     assert "#6183fc" in success and "#eff1f5" in success
@@ -130,6 +201,8 @@ def test_rendered_page_matches_woowtech_brand_and_truthful_status() -> None:
     assert "/config/integrations/dashboard" in success
     # 狀態文案分流
     assert "正在返回整合頁面" in success and "立即返回整合頁" in success
+    assert "連結結果以整合頁顯示為準" in pending
+    assert 'data-status="pending"' in pending
     assert "授權遭拒或已逾時" in error and "關閉視窗" in error
 
 
