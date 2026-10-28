@@ -1,9 +1,11 @@
 """Service-first onboarding, workspace choice and explicit trial activation."""
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from custom_components.woow_paas_smart_home.config_flow import ConfigFlow
+from custom_components.woow_paas_smart_home.const import PRODUCT_SMART_HOME
 from custom_components.woow_paas_smart_home.api_client import ApiError
 
 
@@ -106,6 +108,69 @@ async def test_choosing_the_service_in_use_continues_to_onboarding(flow, monkeyp
     monkeypatch.setattr(flow, "async_step_onboarding", onboard)
     assert (await flow.async_step_select_home({"home": "3"}))["step_id"] == "onboarding"
     assert flow._onboarding_home == home
+
+
+def _claim_flow(flow, monkeypatch):
+    """A flow that is about to claim a service; returns the mocked platform request."""
+    flow.context = {"source": "user"}
+    flow._oauth_data = {"auth_implementation": "woow_paas_smart_home", "token": {}}
+    flow._selected_workspace_id = 2
+    flow._selected_workspace_name = "乙"
+    monkeypatch.setattr(flow, "async_set_unique_id", AsyncMock())
+    monkeypatch.setattr(flow, "_abort_if_unique_id_configured", MagicMock())
+    request = AsyncMock(return_value={
+        "tunnel_token": "tok", "tunnel_id": "tid", "subdomain": "s.example"})
+    monkeypatch.setattr(flow, "_async_api_request", request)
+    return request
+
+
+def _claim_query(request):
+    return parse_qs(urlsplit(request.await_args.args[1]).query)
+
+
+async def test_setup_claim_says_it_is_a_new_entry_that_nobody_confirmed(flow, monkeypatch):
+    request = _claim_flow(flow, monkeypatch)
+    await flow._async_create_entry(
+        product_type=PRODUCT_SMART_HOME, instance_id=3, instance_name="MCP")
+    query = _claim_query(request)
+    assert request.await_args.args[1].startswith("/api/smarthome/homes/3/tunnel-token?")
+    assert query["new_entry"] == ["1"]
+    assert query["confirmed"] == ["0"]
+    assert query["instance_uid"]
+
+
+async def test_choosing_the_service_from_the_list_confirms_the_claim(flow, monkeypatch):
+    request = _claim_flow(flow, monkeypatch)
+    home = {"id": 3, "name": "MCP", "binding_state": "legacy"}
+    flow._homes = [home]
+    monkeypatch.setattr(flow, "async_step_onboarding", AsyncMock(return_value={"step_id": "onboarding"}))
+    await flow.async_step_select_home({"home": "3"})
+    assert flow._claim_confirmed is True
+    await flow._async_create_entry(
+        product_type=PRODUCT_SMART_HOME, instance_id=3, instance_name="MCP")
+    assert _claim_query(request)["confirmed"] == ["1"]
+
+
+async def test_a_service_selected_without_asking_is_not_confirmed(flow, monkeypatch):
+    flow._selected_workspace_id = 2
+    flow._claim_confirmed = True  # left over from an earlier choice in the same flow
+    free = {"id": 3, "name": "MCP", "binding_state": "unbound", "connector_count": 0}
+    monkeypatch.setattr(flow, "_async_api_request", AsyncMock(return_value={"homes": [free]}))
+    monkeypatch.setattr(flow, "async_step_onboarding", AsyncMock(return_value={"step_id": "onboarding"}))
+    await flow.async_step_select_home()
+    assert flow._onboarding_home == free
+    assert flow._claim_confirmed is False
+
+
+async def test_choosing_a_security_access_confirms_the_claim(flow, monkeypatch):
+    request = _claim_flow(flow, monkeypatch)
+    flow._accesses = [{"id": 5, "name": "Gateway"}]
+    request.return_value = {"tunnel_token": "tok", "tunnel_id": "tid"}
+    await flow.async_step_select_access({"access": "5"})
+    assert request.await_args.args[1].startswith("/api/security-access/accesses/5/tunnel-token?")
+    query = _claim_query(request)
+    assert query["new_entry"] == ["1"]
+    assert query["confirmed"] == ["1"]
 
 
 @pytest.mark.parametrize("workspace_id", [None, 2])
