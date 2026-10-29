@@ -92,6 +92,27 @@ def _is_companion_app(user_agent: str) -> bool:
     return "Home Assistant/" in user_agent
 
 
+def _home_in_use(home: dict[str, Any]) -> bool:
+    """Return True unless the service is known to be free.
+
+    Free means unbound and without an attached connector. A platform that does not
+    report these fields counts as in use: a service another installation may be
+    running on must never be taken over without the user choosing it.
+    """
+    return home.get("binding_state") != "unbound" or bool(home.get("connector_count"))
+
+
+def _home_option_label(home: dict[str, Any]) -> str:
+    """Name a service in the selection list, including who is already using it."""
+    if home.get("bound_instance_label"):
+        suffix = f"（已連結：{home['bound_instance_label']}）"
+    elif home.get("binding_state") in ("claimed", "legacy") or home.get("connector_count"):
+        suffix = "（已有其他 Home Assistant 連線）"
+    else:
+        suffix = ""
+    return home["name"] + suffix
+
+
 class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
     """Handle a config flow for Woow PaaS Smart Home."""
 
@@ -110,6 +131,9 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         self._service_kind: str | None = None
         self._onboarding_task: asyncio.Task[None] | None = None
         self._onboarding_home: dict[str, Any] | None = None
+        # True once the user picked the service from a list: the platform then lets a new
+        # entry take over a service that an older installation still holds.
+        self._claim_confirmed = False
         # Device flow (RFC 8628) state — used for HA Companion App onboarding.
         self._device_flow: dict[str, Any] | None = None
         self._device_token: dict[str, Any] | None = None
@@ -377,6 +401,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             self._selected_workspace_id = None
             self._selected_workspace_name = None
             self._onboarding_home = None
+            self._claim_confirmed = False
             _LOGGER.debug("User selected workspace: %s", selected)
             for ws in self._workspaces:
                 if str(ws["id"]) == selected:
@@ -468,11 +493,13 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             for home in self._homes:
                 if str(home["id"]) == selected:
                     self._onboarding_home = home
+                    self._claim_confirmed = True
                     return await self.async_step_onboarding()
             errors["base"] = ERR_CANNOT_CONNECT
 
         if not errors:
             self._onboarding_home = None
+            self._claim_confirmed = False
             _LOGGER.debug(
                 "Fetching homes for workspace_id=%s", self._selected_workspace_id
             )
@@ -499,15 +526,14 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         if not self._homes:
             return await self.async_step_onboarding()
 
-        if len(self._homes) == 1:
+        if len(self._homes) == 1 and not _home_in_use(self._homes[0]):
             self._onboarding_home = self._homes[0]
             return await self.async_step_onboarding()
 
-        # Multiple matching services require an explicit choice.
+        # Several matching services, or one that another installation already
+        # uses, require an explicit choice.
         home_options = {
-            str(home['id']): home['name'] + (
-                f"（已連結：{home['bound_instance_label']}）"
-                if home.get('bound_instance_label') else '') for home in self._homes
+            str(home['id']): _home_option_label(home) for home in self._homes
         }
         return self.async_show_form(
             step_id="select_home",
@@ -600,6 +626,7 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
             _LOGGER.debug("User selected access: %s", selected)
             for access in self._accesses:
                 if str(access["id"]) == selected:
+                    self._claim_confirmed = True
                     return await self._async_create_entry(
                         product_type=PRODUCT_SECURITY_ACCESS,
                         instance_id=access["id"],
@@ -680,7 +707,14 @@ class ConfigFlow(AbstractOAuth2FlowHandler, domain=DOMAIN):
         # #31：取權杖＝向平台宣告「這台 HA 要綁這個家」。帶上本機 uid，平台才
         # 能在第二台來要同一個家時回 409 而不是再發一份權杖。
         this_uid, this_label = await async_instance_identity(self.hass)
-        identity = urlencode({"instance_uid": this_uid, "instance_label": this_label})
+        # `new_entry`: this claim comes from the setup flow, not from an entry that is
+        # restarting or upgrading; `confirmed`: the user picked this service from a list.
+        # The platform only refuses a new entry over a service an older installation
+        # holds (one that cannot say who it is) when it was not confirmed.
+        identity = urlencode({
+            "instance_uid": this_uid, "instance_label": this_label,
+            "new_entry": 1, "confirmed": int(self._claim_confirmed),
+        })
         try:
             if is_sa:
                 path = API_PATH_SA_ACCESS_TUNNEL_TOKEN.format(access_id=instance_id)
